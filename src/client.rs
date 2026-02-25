@@ -157,11 +157,11 @@ fn render(frame: &mut Frame, app: &App) {
 
     // ── Bid rows (best bid at top → lowest at bottom) ───────────────────
     let mut bid_lines: Vec<Line<'_>> = Vec::with_capacity(summary.bids.len() + 2);
-    bid_lines.push(header);
     for (i, level) in summary.bids.iter().enumerate() {
         let cum = bid_cumulative.get(i).copied().unwrap_or(0.0);
         bid_lines.push(format_level(level, GREEN, cum, max_depth));
     }
+    bid_lines.push(header);
     bid_lines.push(Line::from(Span::styled("  BIDS", Style::new().fg(GREEN).bold())));
 
     // ── Layout: asks | spread | bids ────────────────────────────────────

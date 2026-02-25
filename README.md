@@ -218,8 +218,8 @@ cargo bench
 
 | Benchmark | What it measures | Typical |
 |-----------|-----------------|---------|
-| `binance_decode_20` | simd-json parse + fast-float for 20-level Binance depth snapshot | ~3μs |
-| `bitstamp_decode_20` | simd-json parse + fast-float for 20-level Bitstamp order book | ~5μs |
-| `fast_float_parse` | Eisel-Lemire float parse of a price + quantity pair | ~16ns |
-| `merge_2x20` | K-way merge of 2×20 levels into top-10 output | ~1μs |
-| `e2e_parse_merge` | Full pipeline: 2× JSON decode → merge → Summary | ~8μs |
+| `binance_decode_20` | simd-json parse + fast-float for 20-level Binance depth snapshot | ~3.8μs |
+| `bitstamp_decode_20` | simd-json parse + fast-float for 20-level Bitstamp order book | ~4.0μs |
+| `fast_float_parse` | Eisel-Lemire float parse of a price + quantity pair | ~17ns |
+| `merge_2x20` | K-way merge of 2×20 levels into top-10 output | ~230ns |
+| `e2e_parse_merge` | Full pipeline: 2× JSON decode → merge → Summary | ~7.6μs |
