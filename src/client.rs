@@ -91,15 +91,17 @@ fn render(frame: &mut Frame, app: &App) {
     };
 
     // Compute cumulative depth per side (for bars and TOTAL column).
+    // Depth grows outward from spread: best level = its own amount, each
+    // level further out adds more. Creates a funnel shape in the bars.
     let ask_cumulative: Vec<f64> = {
-        // asks displayed highest-at-top, so cumulate from worst (last) to best (first)
-        let mut cum = vec![0.0; summary.asks.len()];
+        // summary.asks is best-first (lowest price). Cumulate best → worst,
+        // then reverse for display order (worst/highest price at top).
+        let mut cum = Vec::with_capacity(summary.asks.len());
         let mut total = 0.0;
-        for i in (0..summary.asks.len()).rev() {
-            total += summary.asks[i].amount;
-            cum[i] = total;
+        for level in &summary.asks {
+            total += level.amount;
+            cum.push(total);
         }
-        // Reverse for display order (highest at top)
         cum.into_iter().rev().collect()
     };
     let bid_cumulative: Vec<f64> = {
