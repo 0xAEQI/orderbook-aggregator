@@ -113,9 +113,9 @@ Exposed metrics:
 - `orderbook_merges_total` — Order book merge operations
 - `orderbook_exchange_up{exchange}` — Connection status gauge (1=connected)
 - `orderbook_uptime_seconds` — Process uptime
-- `orderbook_decode_duration_seconds{exchange}` — Histogram: JSON decode + parse latency (1μs–10ms buckets)
-- `orderbook_merge_duration_seconds` — Histogram: order book merge latency (1μs–10ms buckets)
-- `orderbook_e2e_duration_seconds` — Histogram: end-to-end latency, WS receive to merged publish (1μs–10ms buckets)
+- `orderbook_decode_duration_seconds{exchange}` — Histogram: JSON decode + parse latency (100ns–100ms buckets)
+- `orderbook_merge_duration_seconds` — Histogram: order book merge latency (100ns–100ms buckets)
+- `orderbook_e2e_duration_seconds` — Histogram: end-to-end latency, WS receive to merged publish (100ns–100ms buckets)
 
 ## Sorting Logic
 
@@ -138,7 +138,7 @@ Price/quantity strings are parsed with [`fast-float`](https://github.com/fastflo
 
 ### O(1) Histogram Record
 
-The Prometheus histogram stores per-bucket (non-cumulative) counts. Each `record()` call does a single `fetch_add` on the matching bucket — O(1) regardless of bucket count. Cumulative sums required by the Prometheus exposition format are computed lazily on the `/metrics` scrape path (~every 5-15s). This moves O(k) atomic operations off the hot path and onto the cold path.
+The Prometheus histogram stores per-bucket (non-cumulative) counts across 16 logarithmic buckets (100ns–100ms). Each `record()` call does a single `fetch_add` on the matching bucket — O(1) regardless of bucket count. Cumulative sums required by the Prometheus exposition format are computed lazily on the `/metrics` scrape path (~every 5-15s). This moves O(k) atomic operations off the hot path and onto the cold path.
 
 ### Inline Annotations
 

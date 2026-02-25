@@ -4,8 +4,9 @@
 //! Each exchange adapter receives its own `Arc<ExchangeMetrics>` at startup;
 //! adding a new exchange is a one-line change in `main.rs`, zero changes here.
 //!
-//! Histograms use logarithmic 1-2-5 buckets in the microsecond range,
-//! matching the resolution needed for HFT latency profiling.
+//! Histograms use 1-2-5 logarithmic buckets from 100ns to 100ms, covering
+//! both sub-microsecond decode/merge operations and tail-latency spikes from
+//! context switches, reconnection bursts, and channel backlog.
 
 use std::fmt::Write;
 use std::sync::Arc;
@@ -20,26 +21,31 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 // ---------------------------------------------------------------------------
-// Prometheus histogram with microsecond-resolution logarithmic buckets
+// Prometheus histogram with logarithmic buckets (100ns – 100ms)
 // ---------------------------------------------------------------------------
 
-const NUM_BUCKETS: usize = 12;
+const NUM_BUCKETS: usize = 16;
 
 /// Upper bounds in nanoseconds + Prometheus `le` label strings.
-/// 1-2-5 logarithmic progression from 1μs to 10ms.
+/// 1-2-5 logarithmic progression from 100ns to 100ms — covers both
+/// sub-microsecond decode/merge and tail-latency spikes on e2e.
 const BUCKETS: [(u64, &str); NUM_BUCKETS] = [
-    (1_000, "0.000001"),  // 1μs
-    (2_000, "0.000002"),  // 2μs
-    (5_000, "0.000005"),  // 5μs
-    (10_000, "0.00001"),  // 10μs
-    (25_000, "0.000025"), // 25μs
-    (50_000, "0.00005"),  // 50μs
-    (100_000, "0.0001"),  // 100μs
-    (250_000, "0.00025"), // 250μs
-    (500_000, "0.0005"),  // 500μs
-    (1_000_000, "0.001"), // 1ms
-    (5_000_000, "0.005"), // 5ms
-    (10_000_000, "0.01"), // 10ms
+    (100, "0.0000001"),           // 100ns
+    (500, "0.0000005"),           // 500ns
+    (1_000, "0.000001"),          // 1μs
+    (5_000, "0.000005"),          // 5μs
+    (10_000, "0.00001"),          // 10μs
+    (25_000, "0.000025"),         // 25μs
+    (50_000, "0.00005"),          // 50μs
+    (100_000, "0.0001"),          // 100μs
+    (250_000, "0.00025"),         // 250μs
+    (500_000, "0.0005"),          // 500μs
+    (1_000_000, "0.001"),         // 1ms
+    (5_000_000, "0.005"),         // 5ms
+    (10_000_000, "0.01"),         // 10ms
+    (25_000_000, "0.025"),        // 25ms
+    (50_000_000, "0.05"),         // 50ms
+    (100_000_000, "0.1"),         // 100ms
 ];
 
 pub struct PromHistogram {
@@ -64,7 +70,7 @@ impl PromHistogram {
 
     /// Record a duration observation — O(1): single atomic increment.
     ///
-    /// Finds the matching bucket via linear scan of the 12-element boundary
+    /// Finds the matching bucket via linear scan of the 16-element boundary
     /// table (fits in L1, branch-predicted after warmup) and does one `fetch_add`.
     /// Cumulative sums are computed lazily on the cold `/metrics` render path.
     #[inline]
