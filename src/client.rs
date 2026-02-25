@@ -4,8 +4,9 @@
 //! terminal display with colored depth bars, spread, and exchange attribution.
 //!
 //! ```bash
-//! cargo run --release --bin client                         # localhost:50051
-//! cargo run --release --bin client -- http://server:50051  # custom address
+//! cargo run --release --bin client                                  # localhost:50051
+//! cargo run --release --bin client -- http://server:50051           # custom address
+//! cargo run --release --bin client -- http://localhost:50051 btcusdt # custom symbol
 //! ```
 
 use std::time::Instant;
@@ -33,14 +34,16 @@ struct App {
     summary: Option<proto::Summary>,
     updates: u64,
     start: Instant,
+    symbol: String,
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(symbol: String) -> Self {
         Self {
             summary: None,
             updates: 0,
             start: Instant::now(),
+            symbol,
         }
     }
 
@@ -144,7 +147,7 @@ fn render(frame: &mut Frame, app: &App) {
 
     let outer = Block::default()
         .borders(Borders::ALL)
-        .title(" Order Book ─ ETHBTC ")
+        .title(format!(" Order Book ─ {} ", app.symbol))
         .title_style(Style::new().bold())
         .title_bottom(Line::from(status).alignment(Alignment::Center))
         .padding(Padding::new(1, 1, 1, 0));
@@ -193,6 +196,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "http://localhost:50051".to_string());
+    let symbol = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| "ETHBTC".to_string())
+        .to_uppercase();
 
     let mut client = OrderbookAggregatorClient::connect(addr).await?;
     let mut stream = client
@@ -202,9 +209,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Init terminal.
     let mut terminal = ratatui::init();
-    let guard = TermGuard;
+    let _guard = TermGuard;
 
-    let mut app = App::new();
+    let mut app = App::new(symbol);
 
     loop {
         // Draw current state.
@@ -220,9 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Ok(None) => break, // stream ended
                     Err(e) => {
-                        // Restore terminal before printing error.
-                        drop(guard);
-                        ratatui::restore();
+                        // _guard's Drop restores the terminal on return.
                         return Err(e.into());
                     }
                 }

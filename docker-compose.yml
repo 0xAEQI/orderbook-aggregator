@@ -3,6 +3,7 @@ services:
     build: .
     ports:
       - "50051:50051"
+      - "9090:9090"
     environment:
       - RUST_LOG=info
     command: ["--symbol", "ethbtc", "--port", "50051", "--metrics-port", "9090"]

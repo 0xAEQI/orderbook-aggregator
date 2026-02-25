@@ -56,6 +56,9 @@ struct BookFields<'a> {
     bids: ArrayVec<[&'a str; 2], MAX_LEVELS>,
     #[serde(borrow, default, deserialize_with = "deserialize_capped_levels")]
     asks: ArrayVec<[&'a str; 2], MAX_LEVELS>,
+    /// Error message from Bitstamp (present on `bts:error` events).
+    #[serde(borrow, default)]
+    message: Option<&'a str>,
 }
 
 /// Deserialize a JSON array of `[price, qty]` pairs, keeping only the first
@@ -186,7 +189,11 @@ impl Exchange for Bitstamp {
                                                     }
                                                     "bts:error" => {
                                                         self.metrics.errors.fetch_add(1, Relaxed);
-                                                        error!(exchange = "bitstamp", "server error");
+                                                        error!(
+                                                            exchange = "bitstamp",
+                                                            message = bts_msg.data.message.unwrap_or("unknown"),
+                                                            "server error"
+                                                        );
                                                         break;
                                                     }
                                                     _ => {}

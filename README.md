@@ -83,8 +83,8 @@ cargo run --release --bin orderbook-aggregator
 # Terminal 2: start the TUI client
 cargo run --release --bin client
 
-# Or connect to a different address
-cargo run --release --bin client -- http://localhost:50052
+# Custom address and/or symbol display
+cargo run --release --bin client -- http://localhost:50051 btcusdt
 ```
 
 Or with `grpcurl`:
@@ -144,7 +144,7 @@ The entire path from WebSocket frame receipt through merge output is zero-alloca
 - **`Summary`** bids/asks use `ArrayVec<Level, 10>` — stack-allocated merged output
 - **Exchange → merger channel** uses `tokio::sync::mpsc` with move semantics — the `OrderBook` value is transferred, not cloned
 - **JSON deserialization** borrows `[&str; 2]` pairs into stack-allocated `ArrayVec` — no `String` or `Vec` allocation
-- **Exchange book store** uses a fixed `[Option<OrderBook>; 8]` array with linear scan — no `HashMap` hashing or heap allocation
+- **Exchange book store** uses a fixed `[Option<OrderBook>; 2]` array with linear scan — no `HashMap` hashing or heap allocation
 
 The only remaining allocations are the WebSocket frame `String` (from tokio-tungstenite, unavoidable without kernel bypass) and Protobuf encoding on the gRPC egress path (cold, per-client).
 
@@ -202,7 +202,8 @@ For a production-grade system at Keyrock-level latency requirements, the followi
 cargo test
 ```
 
-10 tests covering:
-- **Merger**: cross-exchange merging, truncation to top-10, empty book handling, tiebreaking by amount, k-way merge interleave correctness
+14 tests covering:
+- **Integration**: end-to-end gRPC stream — mock exchange data through merger to gRPC client
+- **Merger**: cross-exchange merging, single-exchange degraded mode, crossed book (negative spread), truncation to top-10, empty book handling, bid and ask tiebreaking by amount, k-way merge interleave correctness
 - **Binance parser**: realistic depth20 JSON payload, unknown field tolerance
 - **Bitstamp parser**: data message parsing, non-data event handling, custom deserializer cap at 20 levels

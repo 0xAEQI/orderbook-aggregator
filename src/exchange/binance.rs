@@ -74,7 +74,9 @@ impl Exchange for Binance {
                     self.metrics.connected.store(true, Relaxed);
                     backoff_ms = 1000;
 
-                    let (_, mut read) = ws_stream.split();
+                    // Keep write half alive — tungstenite's codec flushes Pong
+                    // replies through the BiLock on each read() call.
+                    let (_write, mut read) = ws_stream.split();
 
                     loop {
                         tokio::select! {

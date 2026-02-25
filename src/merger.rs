@@ -298,6 +298,63 @@ mod tests {
     }
 
     #[test]
+    fn test_single_exchange_only() {
+        let mut books = BookStore::new();
+
+        // Only one exchange connected — common during startup and reconnection.
+        books.insert(book(
+            "binance",
+            &[level("binance", 100.0, 5.0), level("binance", 99.0, 3.0)],
+            &[level("binance", 101.0, 4.0), level("binance", 102.0, 2.0)],
+        ));
+
+        let summary = merge(&books);
+        assert_eq!(summary.bids.len(), 2);
+        assert_eq!(summary.asks.len(), 2);
+        assert_eq!(summary.bids[0].price, 100.0);
+        assert_eq!(summary.asks[0].price, 101.0);
+        assert!((summary.spread - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_crossed_book_negative_spread() {
+        let mut books = BookStore::new();
+
+        // Exchange A's best bid (102) exceeds Exchange B's best ask (101) — crossed book.
+        // Real scenario in multi-exchange aggregation with latency skew.
+        books.insert(book(
+            "a",
+            &[level("a", 102.0, 1.0)],
+            &[level("a", 103.0, 1.0)],
+        ));
+        books.insert(book(
+            "b",
+            &[level("b", 99.0, 1.0)],
+            &[level("b", 101.0, 1.0)],
+        ));
+
+        let summary = merge(&books);
+        assert_eq!(summary.bids[0].price, 102.0);
+        assert_eq!(summary.asks[0].price, 101.0);
+        // Spread is negative — signals an arbitrage opportunity.
+        assert!(summary.spread < 0.0);
+        assert!((summary.spread - (-1.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_ask_tiebreak_by_amount_across_exchanges() {
+        let mut books = BookStore::new();
+
+        // Same ask price from two exchanges — larger amount should come first.
+        books.insert(book("a", &[], &[level("a", 100.0, 1.0)]));
+        books.insert(book("b", &[], &[level("b", 100.0, 5.0)]));
+
+        let summary = merge(&books);
+        assert_eq!(summary.asks[0].amount, 5.0);
+        assert_eq!(summary.asks[1].amount, 1.0);
+    }
+
+    #[test]
     fn test_kway_merge_interleaves_correctly() {
         let mut books = BookStore::new();
 
