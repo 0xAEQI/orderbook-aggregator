@@ -2,6 +2,9 @@
 //!
 //! Connects to the partial depth stream which provides a snapshot of the top 20
 //! price levels every 100ms — no sequence tracking or REST snapshot needed.
+//!
+//! Zero-copy JSON parse: deserializes `[&str; 2]` (borrowed from the WS frame
+//! buffer) instead of `[String; 2]`, eliminating 80 heap allocations per message.
 
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
@@ -24,10 +27,13 @@ pub struct Binance {
     pub metrics: Arc<ExchangeMetrics>,
 }
 
-#[derive(Debug, Deserialize)]
-struct DepthSnapshot {
-    bids: Vec<[String; 2]>,
-    asks: Vec<[String; 2]>,
+/// Zero-copy: borrows price/qty strings directly from the JSON input buffer.
+#[derive(Deserialize)]
+struct DepthSnapshot<'a> {
+    #[serde(borrow)]
+    bids: Vec<[&'a str; 2]>,
+    #[serde(borrow)]
+    asks: Vec<[&'a str; 2]>,
 }
 
 impl Exchange for Binance {
@@ -73,9 +79,9 @@ impl Exchange for Binance {
                                     Some(Ok(msg)) => {
                                         if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
                                             let t0 = Instant::now();
-                                            match serde_json::from_str::<DepthSnapshot>(&text) {
+                                            match serde_json::from_str::<DepthSnapshot<'_>>(&text) {
                                                 Ok(snapshot) => {
-                                                    let book = parse_snapshot(snapshot, t0);
+                                                    let book = parse_snapshot(&snapshot, t0);
                                                     self.metrics.decode_latency.record(t0.elapsed());
                                                     self.metrics.messages.fetch_add(1, Relaxed);
                                                     let _ = sender.send(book);
@@ -126,35 +132,22 @@ impl Exchange for Binance {
     }
 }
 
-fn parse_snapshot(snapshot: DepthSnapshot, received_at: std::time::Instant) -> OrderBook {
-    let bids = snapshot
-        .bids
-        .iter()
-        .filter_map(|[price, qty]| {
-            Some(Level {
-                exchange: "binance",
-                price: price.parse().ok()?,
-                amount: qty.parse().ok()?,
-            })
-        })
-        .collect();
+/// Parse borrowed string slices directly into f64 — no intermediate String allocation.
+fn parse_levels(exchange: &'static str, raw: &[[&str; 2]]) -> Vec<Level> {
+    let mut levels = Vec::with_capacity(raw.len());
+    for &[price, amount] in raw {
+        if let (Ok(p), Ok(a)) = (price.parse(), amount.parse()) {
+            levels.push(Level { exchange, price: p, amount: a });
+        }
+    }
+    levels
+}
 
-    let asks = snapshot
-        .asks
-        .iter()
-        .filter_map(|[price, qty]| {
-            Some(Level {
-                exchange: "binance",
-                price: price.parse().ok()?,
-                amount: qty.parse().ok()?,
-            })
-        })
-        .collect();
-
+fn parse_snapshot(snapshot: &DepthSnapshot<'_>, received_at: Instant) -> OrderBook {
     OrderBook {
         exchange: "binance",
-        bids,
-        asks,
+        bids: parse_levels("binance", &snapshot.bids),
+        asks: parse_levels("binance", &snapshot.asks),
         received_at,
     }
 }

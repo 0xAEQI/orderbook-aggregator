@@ -4,9 +4,11 @@
 //! maintains the latest book per exchange, and publishes merged [`Summary`]
 //! snapshots via a `tokio::watch` channel.
 //!
-//! Working buffers are pre-allocated and reused across merge cycles to avoid
-//! per-tick heap allocations on the hot path.
+//! Uses a k-way merge of pre-sorted exchange books: O(TOP_N × k) comparisons
+//! instead of O(n log n) concat+sort. For 2 exchanges × 20 levels → top 10,
+//! that's ~20 comparisons vs ~212.
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
@@ -21,6 +23,9 @@ use crate::types::{Level, OrderBook, Summary};
 
 const TOP_N: usize = 10;
 
+/// Max exchanges we support (stack-allocated cursor array, no heap alloc).
+const MAX_EXCHANGES: usize = 8;
+
 /// Runs the merger loop until cancellation.
 pub async fn run(
     mut rx: broadcast::Receiver<OrderBook>,
@@ -29,11 +34,6 @@ pub async fn run(
     cancel: CancellationToken,
 ) {
     let mut books: HashMap<&'static str, OrderBook> = HashMap::new();
-
-    // Pre-allocated working buffers — grow once, reused every merge cycle.
-    // 20 levels per exchange * 2 exchanges = 40 max.
-    let mut bid_buf: Vec<Level> = Vec::with_capacity(40);
-    let mut ask_buf: Vec<Level> = Vec::with_capacity(40);
 
     info!("merger started");
 
@@ -49,7 +49,7 @@ pub async fn run(
                         let received_at = book.received_at;
                         books.insert(book.exchange, book);
                         let t0 = Instant::now();
-                        let summary = merge(&books, &mut bid_buf, &mut ask_buf);
+                        let summary = merge(&books);
                         metrics.merge_latency.record(t0.elapsed());
                         metrics.merges.fetch_add(1, Relaxed);
                         debug!(
@@ -75,61 +75,75 @@ pub async fn run(
     }
 }
 
-/// Merge all exchange order books into a single [`Summary`].
+/// K-way merge of pre-sorted slices, taking only the top `n` elements.
 ///
-/// Uses caller-provided buffers to avoid allocating working vectors on each call.
-/// Only the final 10-element result vectors are freshly allocated (unavoidable since
-/// they cross the watch channel).
-fn merge(
-    books: &HashMap<&'static str, OrderBook>,
-    bid_buf: &mut Vec<Level>,
-    ask_buf: &mut Vec<Level>,
-) -> Summary {
-    bid_buf.clear();
-    ask_buf.clear();
+/// Each exchange's order book arrives pre-sorted from the exchange. Instead of
+/// concatenating all levels and sorting O(m log m), we maintain a cursor per
+/// exchange and pick the best head at each step: O(n × k) total comparisons.
+///
+/// Stack-allocated cursors — zero heap allocation besides the result Vec.
+fn merge_top_n(
+    slices: &[&[Level]],
+    cmp: impl Fn(&Level, &Level) -> Ordering,
+    n: usize,
+) -> Vec<Level> {
+    let k = slices.len();
+    let mut cursors = [0usize; MAX_EXCHANGES];
+    let mut result = Vec::with_capacity(n);
 
+    for _ in 0..n {
+        let mut best: Option<usize> = None;
+        for i in 0..k {
+            if cursors[i] < slices[i].len() {
+                best = Some(match best {
+                    None => i,
+                    Some(b) if cmp(&slices[i][cursors[i]], &slices[b][cursors[b]]).is_lt() => i,
+                    Some(b) => b,
+                });
+            }
+        }
+        match best {
+            Some(i) => {
+                result.push(slices[i][cursors[i]].clone());
+                cursors[i] += 1;
+            }
+            None => break,
+        }
+    }
+
+    result
+}
+
+/// Merge all exchange order books into a single [`Summary`].
+fn merge(books: &HashMap<&'static str, OrderBook>) -> Summary {
+    // Stack-allocated slice collectors — no heap alloc.
+    let mut bid_slices = [&[][..]; MAX_EXCHANGES];
+    let mut ask_slices = [&[][..]; MAX_EXCHANGES];
+    let mut k = 0;
     for book in books.values() {
-        bid_buf.extend(book.bids.iter().cloned());
-        ask_buf.extend(book.asks.iter().cloned());
+        if k < MAX_EXCHANGES {
+            bid_slices[k] = &book.bids;
+            ask_slices[k] = &book.asks;
+            k += 1;
+        }
     }
 
     // Bids: highest price first, then largest amount as tiebreaker.
-    bid_buf.sort_by(|a, b| {
-        b.price
-            .partial_cmp(&a.price)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(
-                b.amount
-                    .partial_cmp(&a.amount)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
-    });
+    let bids = merge_top_n(&bid_slices[..k], |a, b| {
+        b.price.total_cmp(&a.price).then(b.amount.total_cmp(&a.amount))
+    }, TOP_N);
 
     // Asks: lowest price first, then largest amount as tiebreaker.
-    ask_buf.sort_by(|a, b| {
-        a.price
-            .partial_cmp(&b.price)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(
-                b.amount
-                    .partial_cmp(&a.amount)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
-    });
+    let asks = merge_top_n(&ask_slices[..k], |a, b| {
+        a.price.total_cmp(&b.price).then(b.amount.total_cmp(&a.amount))
+    }, TOP_N);
 
-    bid_buf.truncate(TOP_N);
-    ask_buf.truncate(TOP_N);
-
-    let spread = match (ask_buf.first(), bid_buf.first()) {
+    let spread = match (asks.first(), bids.first()) {
         (Some(ask), Some(bid)) => ask.price - bid.price,
         _ => 0.0,
     };
 
-    Summary {
-        spread,
-        bids: bid_buf.to_vec(),
-        asks: ask_buf.to_vec(),
-    }
+    Summary { spread, bids, asks }
 }
 
 #[cfg(test)]
@@ -156,8 +170,6 @@ mod tests {
     #[test]
     fn test_merge_two_exchanges() {
         let mut books = HashMap::new();
-        let mut bid_buf = Vec::new();
-        let mut ask_buf = Vec::new();
 
         books.insert(
             "binance",
@@ -183,7 +195,7 @@ mod tests {
             ),
         );
 
-        let summary = merge(&books, &mut bid_buf, &mut ask_buf);
+        let summary = merge(&books);
 
         // Best bid should be bitstamp at 100.5.
         assert_eq!(summary.bids[0].exchange, "bitstamp");
@@ -204,8 +216,6 @@ mod tests {
     #[test]
     fn test_merge_truncates_to_top_10() {
         let mut books = HashMap::new();
-        let mut bid_buf = Vec::new();
-        let mut ask_buf = Vec::new();
 
         let many_bids: Vec<Level> = (0..15)
             .map(|i| level("binance", 100.0 - i as f64, 1.0))
@@ -216,7 +226,7 @@ mod tests {
 
         books.insert("binance", book("binance", many_bids, many_asks));
 
-        let summary = merge(&books, &mut bid_buf, &mut ask_buf);
+        let summary = merge(&books);
         assert_eq!(summary.bids.len(), 10);
         assert_eq!(summary.asks.len(), 10);
     }
@@ -224,60 +234,59 @@ mod tests {
     #[test]
     fn test_merge_empty() {
         let books = HashMap::new();
-        let mut bid_buf = Vec::new();
-        let mut ask_buf = Vec::new();
 
-        let summary = merge(&books, &mut bid_buf, &mut ask_buf);
+        let summary = merge(&books);
         assert!(summary.bids.is_empty());
         assert!(summary.asks.is_empty());
         assert_eq!(summary.spread, 0.0);
     }
 
     #[test]
-    fn test_bid_sort_tiebreak_by_amount() {
+    fn test_bid_tiebreak_by_amount_across_exchanges() {
         let mut books = HashMap::new();
-        let mut bid_buf = Vec::new();
-        let mut ask_buf = Vec::new();
 
-        books.insert(
-            "test",
-            book(
-                "test",
-                vec![level("a", 100.0, 1.0), level("b", 100.0, 5.0)],
-                vec![],
-            ),
-        );
+        // Same price from two exchanges — larger amount should come first.
+        books.insert("a", book("a", vec![level("a", 100.0, 1.0)], vec![]));
+        books.insert("b", book("b", vec![level("b", 100.0, 5.0)], vec![]));
 
-        let summary = merge(&books, &mut bid_buf, &mut ask_buf);
-        // Larger amount should come first at same price.
+        let summary = merge(&books);
         assert_eq!(summary.bids[0].amount, 5.0);
         assert_eq!(summary.bids[1].amount, 1.0);
     }
 
     #[test]
-    fn test_buffers_reused_across_merges() {
+    fn test_kway_merge_interleaves_correctly() {
         let mut books = HashMap::new();
-        let mut bid_buf = Vec::with_capacity(40);
-        let mut ask_buf = Vec::with_capacity(40);
 
+        // Binance: 100, 98, 96   Bitstamp: 99, 97, 95
+        // Expected merged bids: 100, 99, 98, 97, 96, 95
         books.insert(
-            "test",
+            "binance",
             book(
-                "test",
-                vec![level("test", 100.0, 1.0)],
-                vec![level("test", 101.0, 1.0)],
+                "binance",
+                vec![
+                    level("binance", 100.0, 1.0),
+                    level("binance", 98.0, 1.0),
+                    level("binance", 96.0, 1.0),
+                ],
+                vec![],
+            ),
+        );
+        books.insert(
+            "bitstamp",
+            book(
+                "bitstamp",
+                vec![
+                    level("bitstamp", 99.0, 1.0),
+                    level("bitstamp", 97.0, 1.0),
+                    level("bitstamp", 95.0, 1.0),
+                ],
+                vec![],
             ),
         );
 
-        // First merge grows buffers.
-        let _ = merge(&books, &mut bid_buf, &mut ask_buf);
-        assert!(bid_buf.capacity() >= 40);
-        assert!(ask_buf.capacity() >= 40);
-
-        // Second merge reuses — capacity stays, no realloc.
-        let cap_before = (bid_buf.capacity(), ask_buf.capacity());
-        let _ = merge(&books, &mut bid_buf, &mut ask_buf);
-        assert_eq!(bid_buf.capacity(), cap_before.0);
-        assert_eq!(ask_buf.capacity(), cap_before.1);
+        let summary = merge(&books);
+        let prices: Vec<f64> = summary.bids.iter().map(|l| l.price).collect();
+        assert_eq!(prices, vec![100.0, 99.0, 98.0, 97.0, 96.0, 95.0]);
     }
 }
