@@ -14,7 +14,7 @@ mod types;
 use std::sync::Arc;
 
 use clap::Parser;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 use tracing::info;
@@ -47,8 +47,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register metrics — adding a new exchange is a one-line change here.
     let metrics = Arc::new(Metrics::register(&["binance", "bitstamp"]));
 
-    // Broadcast channel for exchange → merger communication.
-    let (book_tx, book_rx) = broadcast::channel::<types::OrderBook>(64);
+    // mpsc channel for exchange → merger (move semantics, no broadcast clone overhead).
+    let (book_tx, book_rx) = mpsc::channel::<types::OrderBook>(64);
 
     // Watch channel for merger → gRPC server (latest-value semantics).
     let (summary_tx, summary_rx) = watch::channel(Summary::default());
@@ -78,13 +78,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let tx = book_tx.clone();
         let cancel = cancel.clone();
         tokio::spawn(async move {
-            if let Err(e) = bitstamp.connect(symbol, tx, cancel).await {
+            if let Err(e) = Box::pin(bitstamp.connect(symbol, tx, cancel)).await {
                 tracing::error!(exchange = "bitstamp", error = %e, "fatal error");
             }
         })
     };
 
-    // Drop the original sender so broadcast closes when exchanges stop.
+    // Drop the original sender so channel closes when exchanges stop.
     drop(book_tx);
 
     // Spawn merger task.

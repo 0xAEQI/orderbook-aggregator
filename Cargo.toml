@@ -30,6 +30,7 @@ futures-util = "0.3"
 rand = "0.9"
 axum = "0.7"
 fast-float = "0.2"
+arrayvec = { version = "0.7", features = ["serde"] }
 
 [build-dependencies]
 tonic-build = "0.12"

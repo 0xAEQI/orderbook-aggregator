@@ -13,10 +13,11 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
 
+use arrayvec::ArrayVec;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async_tls_with_config;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
@@ -35,7 +36,7 @@ pub struct Bitstamp {
 }
 
 /// Full message — single-pass parse. For non-data events, `data.bids` and
-/// `data.asks` default to empty vecs (unknown fields in `data` are ignored).
+/// `data.asks` default to empty `ArrayVec`s (unknown fields in `data` are ignored).
 #[derive(Deserialize)]
 struct BitstampMessage<'a> {
     #[serde(borrow)]
@@ -44,19 +45,21 @@ struct BitstampMessage<'a> {
     data: BookFields<'a>,
 }
 
+/// Bitstamp sends up to 100 levels per side. We cap deserialization at 100 to
+/// avoid heap allocation — `parse_levels` further caps at `MAX_LEVELS` (20).
 #[derive(Deserialize, Default)]
 struct BookFields<'a> {
     #[serde(borrow, default)]
-    bids: Vec<[&'a str; 2]>,
+    bids: ArrayVec<[&'a str; 2], 100>,
     #[serde(borrow, default)]
-    asks: Vec<[&'a str; 2]>,
+    asks: ArrayVec<[&'a str; 2], 100>,
 }
 
 impl Exchange for Bitstamp {
     async fn connect(
         &self,
         symbol: String,
-        sender: broadcast::Sender<OrderBook>,
+        sender: mpsc::Sender<OrderBook>,
         cancel: CancellationToken,
     ) -> Result<()> {
         let channel = format!("order_book_{}", symbol.to_lowercase());
@@ -126,7 +129,7 @@ impl Exchange for Bitstamp {
                                                         let book = parse_book(&bts_msg.data, t0);
                                                         self.metrics.decode_latency.record(t0.elapsed());
                                                         self.metrics.messages.fetch_add(1, Relaxed);
-                                                        let _ = sender.send(book);
+                                                        let _ = sender.send(book).await;
                                                     }
                                                     "bts:subscription_succeeded" => {
                                                         info!(exchange = "bitstamp", "subscription confirmed");

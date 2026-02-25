@@ -11,9 +11,10 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
 
+use arrayvec::ArrayVec;
 use futures_util::StreamExt;
 use serde::Deserialize;
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async_tls_with_config;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -29,19 +30,20 @@ pub struct Binance {
 }
 
 /// Zero-copy: borrows price/qty strings directly from the JSON input buffer.
+/// Binance depth20 always sends exactly 20 levels — `ArrayVec` avoids heap allocation.
 #[derive(Deserialize)]
 struct DepthSnapshot<'a> {
     #[serde(borrow)]
-    bids: Vec<[&'a str; 2]>,
+    bids: ArrayVec<[&'a str; 2], 20>,
     #[serde(borrow)]
-    asks: Vec<[&'a str; 2]>,
+    asks: ArrayVec<[&'a str; 2], 20>,
 }
 
 impl Exchange for Binance {
     async fn connect(
         &self,
         symbol: String,
-        sender: broadcast::Sender<OrderBook>,
+        sender: mpsc::Sender<OrderBook>,
         cancel: CancellationToken,
     ) -> Result<()> {
         let url = format!(
@@ -96,7 +98,7 @@ impl Exchange for Binance {
                                                     let book = parse_snapshot(&snapshot, t0);
                                                     self.metrics.decode_latency.record(t0.elapsed());
                                                     self.metrics.messages.fetch_add(1, Relaxed);
-                                                    let _ = sender.send(book);
+                                                    let _ = sender.send(book).await;
                                                 }
                                                 Err(e) => {
                                                     self.metrics.errors.fetch_add(1, Relaxed);
