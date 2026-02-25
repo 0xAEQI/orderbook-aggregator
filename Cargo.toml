@@ -20,5 +20,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"
 rand = "0.8"
 
+[[bin]]
+name = "orderbook-aggregator"
+path = "src/main.rs"
+
+[[bin]]
+name = "client"
+path = "src/client.rs"
+
 [build-dependencies]
 tonic-build = "0.12"

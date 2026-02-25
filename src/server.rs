@@ -47,7 +47,7 @@ fn to_proto(summary: Summary) -> proto::Summary {
             .bids
             .into_iter()
             .map(|l| proto::Level {
-                exchange: l.exchange,
+                exchange: l.exchange.to_string(),
                 price: l.price,
                 amount: l.amount,
             })
@@ -56,7 +56,7 @@ fn to_proto(summary: Summary) -> proto::Summary {
             .asks
             .into_iter()
             .map(|l| proto::Level {
-                exchange: l.exchange,
+                exchange: l.exchange.to_string(),
                 price: l.price,
                 amount: l.amount,
             })

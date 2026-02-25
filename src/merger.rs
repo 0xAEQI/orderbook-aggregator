@@ -20,7 +20,7 @@ pub async fn run(
     summary_tx: watch::Sender<Summary>,
     cancel: CancellationToken,
 ) {
-    let mut books: HashMap<String, OrderBook> = HashMap::new();
+    let mut books: HashMap<&'static str, OrderBook> = HashMap::new();
 
     info!("merger started");
 
@@ -33,7 +33,7 @@ pub async fn run(
             result = rx.recv() => {
                 match result {
                     Ok(book) => {
-                        books.insert(book.exchange.clone(), book);
+                        books.insert(book.exchange, book);
                         let summary = merge(&books);
                         debug!(
                             spread = summary.spread,
@@ -57,7 +57,7 @@ pub async fn run(
 }
 
 /// Merge all exchange order books into a single [`Summary`].
-fn merge(books: &HashMap<String, OrderBook>) -> Summary {
+fn merge(books: &HashMap<&'static str, OrderBook>) -> Summary {
     let mut all_bids: Vec<Level> = books
         .values()
         .flat_map(|b| b.bids.iter().cloned())
@@ -111,17 +111,17 @@ fn merge(books: &HashMap<String, OrderBook>) -> Summary {
 mod tests {
     use super::*;
 
-    fn level(exchange: &str, price: f64, amount: f64) -> Level {
+    fn level(exchange: &'static str, price: f64, amount: f64) -> Level {
         Level {
-            exchange: exchange.to_string(),
+            exchange,
             price,
             amount,
         }
     }
 
-    fn book(exchange: &str, bids: Vec<Level>, asks: Vec<Level>) -> OrderBook {
+    fn book(exchange: &'static str, bids: Vec<Level>, asks: Vec<Level>) -> OrderBook {
         OrderBook {
-            exchange: exchange.to_string(),
+            exchange,
             bids,
             asks,
         }
@@ -132,7 +132,7 @@ mod tests {
         let mut books = HashMap::new();
 
         books.insert(
-            "binance".to_string(),
+            "binance",
             book(
                 "binance",
                 vec![level("binance", 100.0, 5.0), level("binance", 99.0, 3.0)],
@@ -141,7 +141,7 @@ mod tests {
         );
 
         books.insert(
-            "bitstamp".to_string(),
+            "bitstamp",
             book(
                 "bitstamp",
                 vec![
@@ -184,10 +184,7 @@ mod tests {
             .map(|i| level("binance", 101.0 + i as f64, 1.0))
             .collect();
 
-        books.insert(
-            "binance".to_string(),
-            book("binance", many_bids, many_asks),
-        );
+        books.insert("binance", book("binance", many_bids, many_asks));
 
         let summary = merge(&books);
         assert_eq!(summary.bids.len(), 10);
@@ -208,13 +205,10 @@ mod tests {
         let mut books = HashMap::new();
 
         books.insert(
-            "test".to_string(),
+            "test",
             book(
                 "test",
-                vec![
-                    level("a", 100.0, 1.0),
-                    level("b", 100.0, 5.0),
-                ],
+                vec![level("a", 100.0, 1.0), level("b", 100.0, 5.0)],
                 vec![],
             ),
         );

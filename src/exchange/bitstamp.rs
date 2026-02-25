@@ -90,7 +90,7 @@ impl Exchange for Bitstamp {
                                                     "data" => {
                                                         match serde_json::from_value::<BookData>(bts_msg.data) {
                                                             Ok(book_data) => {
-                                                                let book = parse_book("bitstamp", book_data);
+                                                                let book = parse_book(book_data);
                                                                 let _ = sender.send(book);
                                                             }
                                                             Err(e) => {
@@ -151,13 +151,13 @@ impl Exchange for Bitstamp {
     }
 }
 
-fn parse_book(exchange: &str, data: BookData) -> OrderBook {
+fn parse_book(data: BookData) -> OrderBook {
     let bids = data
         .bids
         .iter()
         .filter_map(|[price, amount]| {
             Some(Level {
-                exchange: exchange.to_string(),
+                exchange: "bitstamp",
                 price: price.parse().ok()?,
                 amount: amount.parse().ok()?,
             })
@@ -169,7 +169,7 @@ fn parse_book(exchange: &str, data: BookData) -> OrderBook {
         .iter()
         .filter_map(|[price, amount]| {
             Some(Level {
-                exchange: exchange.to_string(),
+                exchange: "bitstamp",
                 price: price.parse().ok()?,
                 amount: amount.parse().ok()?,
             })
@@ -177,7 +177,7 @@ fn parse_book(exchange: &str, data: BookData) -> OrderBook {
         .collect();
 
     OrderBook {
-        exchange: exchange.to_string(),
+        exchange: "bitstamp",
         bids,
         asks,
     }

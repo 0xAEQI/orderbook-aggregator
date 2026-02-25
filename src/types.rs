@@ -3,7 +3,7 @@
 /// A single price level from an exchange.
 #[derive(Debug, Clone)]
 pub struct Level {
-    pub exchange: String,
+    pub exchange: &'static str,
     pub price: f64,
     pub amount: f64,
 }
@@ -11,7 +11,7 @@ pub struct Level {
 /// Snapshot of one exchange's order book.
 #[derive(Debug, Clone)]
 pub struct OrderBook {
-    pub exchange: String,
+    pub exchange: &'static str,
     /// Bids sorted highest price first.
     pub bids: Vec<Level>,
     /// Asks sorted lowest price first.

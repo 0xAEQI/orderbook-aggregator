@@ -64,7 +64,7 @@ impl Exchange for Binance {
                                         if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
                                             match serde_json::from_str::<DepthSnapshot>(&text) {
                                                 Ok(snapshot) => {
-                                                    let book = parse_snapshot("binance", snapshot);
+                                                    let book = parse_snapshot(snapshot);
                                                     // Receivers may lag — that's fine for latest-value semantics.
                                                     let _ = sender.send(book);
                                                 }
@@ -109,13 +109,13 @@ impl Exchange for Binance {
     }
 }
 
-fn parse_snapshot(exchange: &str, snapshot: DepthSnapshot) -> OrderBook {
+fn parse_snapshot(snapshot: DepthSnapshot) -> OrderBook {
     let bids = snapshot
         .bids
         .iter()
         .filter_map(|[price, qty]| {
             Some(Level {
-                exchange: exchange.to_string(),
+                exchange: "binance",
                 price: price.parse().ok()?,
                 amount: qty.parse().ok()?,
             })
@@ -127,7 +127,7 @@ fn parse_snapshot(exchange: &str, snapshot: DepthSnapshot) -> OrderBook {
         .iter()
         .filter_map(|[price, qty]| {
             Some(Level {
-                exchange: exchange.to_string(),
+                exchange: "binance",
                 price: price.parse().ok()?,
                 amount: qty.parse().ok()?,
             })
@@ -135,7 +135,7 @@ fn parse_snapshot(exchange: &str, snapshot: DepthSnapshot) -> OrderBook {
         .collect();
 
     OrderBook {
-        exchange: exchange.to_string(),
+        exchange: "binance",
         bids,
         asks,
     }
