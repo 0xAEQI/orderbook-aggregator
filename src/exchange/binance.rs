@@ -136,16 +136,19 @@ impl Exchange for Binance {
 }
 
 /// Parse borrowed string slices directly into f64 — no intermediate String allocation.
+/// Uses `fast-float` for SIMD-accelerated float parsing (~2-3x faster than `str::parse`).
+#[inline]
 fn parse_levels(exchange: &'static str, raw: &[[&str; 2]]) -> Vec<Level> {
     let mut levels = Vec::with_capacity(raw.len());
     for &[price, amount] in raw {
-        if let (Ok(p), Ok(a)) = (price.parse(), amount.parse()) {
+        if let (Ok(p), Ok(a)) = (fast_float::parse(price), fast_float::parse(amount)) {
             levels.push(Level { exchange, price: p, amount: a });
         }
     }
     levels
 }
 
+#[inline]
 fn parse_snapshot(snapshot: &DepthSnapshot<'_>, received_at: Instant) -> OrderBook {
     OrderBook {
         exchange: "binance",

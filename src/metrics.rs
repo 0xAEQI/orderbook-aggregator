@@ -43,8 +43,10 @@ const BUCKETS: [(u64, &str); NUM_BUCKETS] = [
 ];
 
 pub struct PromHistogram {
-    /// Cumulative bucket counters. Index i counts observations <= BUCKETS[i].
-    buckets: [AtomicU64; NUM_BUCKETS],
+    /// Per-bucket (non-cumulative) counters. Index i counts observations where
+    /// BUCKETS[i-1] < value <= BUCKETS[i]. Last slot is the +Inf overflow bucket.
+    /// This gives O(1) record (single fetch_add) vs O(k) for cumulative buckets.
+    buckets: [AtomicU64; NUM_BUCKETS + 1],
     /// Sum of all observed values in nanoseconds.
     sum_ns: AtomicU64,
     /// Total number of observations.
@@ -60,31 +62,40 @@ impl PromHistogram {
         }
     }
 
-    /// Record a duration observation (~5-10ns cost).
+    /// Record a duration observation — O(1): single atomic increment.
+    ///
+    /// Finds the matching bucket via linear scan of the 12-element boundary
+    /// table (fits in L1, branch-predicted after warmup) and does one `fetch_add`.
+    /// Cumulative sums are computed lazily on the cold `/metrics` render path.
+    #[inline]
     pub fn record(&self, duration: Duration) {
         let nanos = duration.as_nanos() as u64;
 
+        let mut idx = NUM_BUCKETS; // overflow slot
         for (i, &(bound_ns, _)) in BUCKETS.iter().enumerate() {
             if nanos <= bound_ns {
-                for bucket in &self.buckets[i..] {
-                    bucket.fetch_add(1, Relaxed);
-                }
+                idx = i;
                 break;
             }
         }
 
+        self.buckets[idx].fetch_add(1, Relaxed);
         self.sum_ns.fetch_add(nanos, Relaxed);
         self.count.fetch_add(1, Relaxed);
     }
 
     /// Render as Prometheus histogram lines.
+    ///
+    /// Computes cumulative sums from per-bucket counts — O(k) work on the cold
+    /// scrape path (~every 5-15s) instead of on every hot-path record().
     fn render(&self, name: &str, labels: &str, out: &mut String) {
+        let mut cumulative = 0u64;
         for (i, &(_, le)) in BUCKETS.iter().enumerate() {
-            let count = self.buckets[i].load(Relaxed);
+            cumulative += self.buckets[i].load(Relaxed);
             if labels.is_empty() {
-                writeln!(out, "{name}_bucket{{le=\"{le}\"}} {count}").unwrap();
+                writeln!(out, "{name}_bucket{{le=\"{le}\"}} {cumulative}").unwrap();
             } else {
-                writeln!(out, "{name}_bucket{{{labels},le=\"{le}\"}} {count}").unwrap();
+                writeln!(out, "{name}_bucket{{{labels},le=\"{le}\"}} {cumulative}").unwrap();
             }
         }
 

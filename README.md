@@ -126,6 +126,24 @@ The merged order book puts **best deals first**:
 - **Tiebreaker**: at the same price, the larger amount comes first (more liquidity)
 - **Spread**: `best_ask - best_bid`
 
+## Performance Engineering
+
+### Build Configuration
+
+`.cargo/config.toml` sets `target-cpu=native`, enabling AVX2/SSE4.2 instructions for `simd-json`'s vectorized JSON tokenizer. The release profile uses `lto = "thin"` for cross-module link-time optimization, `codegen-units = 1` for maximum inlining across compilation units, and `strip = true` to reduce binary size.
+
+### SIMD-Accelerated Float Parsing
+
+Price/quantity strings are parsed with [`fast-float`](https://github.com/fastfloat/fast-float-rust) instead of `str::parse::<f64>()`. `fast-float` uses SIMD-accelerated algorithms matching the Eisel-Lemire number parsing technique — 2-3x faster than the standard library. With 40 levels × 2 values = 80 float parses per WebSocket message, this is measurable at message rates of 10-20 Hz per exchange.
+
+### O(1) Histogram Record
+
+The Prometheus histogram stores per-bucket (non-cumulative) counts. Each `record()` call does a single `fetch_add` on the matching bucket — O(1) regardless of bucket count. Cumulative sums required by the Prometheus exposition format are computed lazily on the `/metrics` scrape path (~every 5-15s). This moves O(k) atomic operations off the hot path and onto the cold path.
+
+### Inline Annotations
+
+`#[inline]` hints on all per-message functions (`parse_levels`, `parse_snapshot`, `parse_book`, `merge_top_n`, `merge`, `PromHistogram::record`) ensure the compiler can inline across module boundaries. Without this, Rust's default compilation model may prevent cross-module inlining for sub-microsecond functions where call overhead is proportionally significant.
+
 ## Design Decisions
 
 ### Channel Architecture

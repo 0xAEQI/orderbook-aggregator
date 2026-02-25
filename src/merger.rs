@@ -82,6 +82,7 @@ pub async fn run(
 /// exchange and pick the best head at each step: O(n × k) total comparisons.
 ///
 /// Stack-allocated cursors — zero heap allocation besides the result Vec.
+#[inline]
 fn merge_top_n(
     slices: &[&[Level]],
     cmp: impl Fn(&Level, &Level) -> Ordering,
@@ -115,6 +116,7 @@ fn merge_top_n(
 }
 
 /// Merge all exchange order books into a single [`Summary`].
+#[inline]
 fn merge(books: &HashMap<&'static str, OrderBook>) -> Summary {
     // Stack-allocated slice collectors — no heap alloc.
     let mut bid_slices = [&[][..]; MAX_EXCHANGES];

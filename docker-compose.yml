@@ -6,13 +6,20 @@ services:
     environment:
       - RUST_LOG=info
     command: ["--symbol", "ethbtc", "--port", "50051", "--metrics-port", "9090"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   client:
     build: .
     entrypoint: ["orderbook-client"]
     command: ["http://server:50051"]
     depends_on:
-      - server
+      server:
+        condition: service_healthy
     restart: on-failure
 
   prometheus:
