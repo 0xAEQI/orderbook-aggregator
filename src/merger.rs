@@ -22,8 +22,8 @@ use tracing::{debug, info};
 use crate::metrics::Metrics;
 use crate::types::{Level, OrderBook, Summary, TOP_N};
 
-/// Max exchanges we support (stack-allocated cursor + book arrays, no heap alloc).
-const MAX_EXCHANGES: usize = 8;
+/// Number of exchanges (Binance + Bitstamp). Sizes stack-allocated arrays.
+const MAX_EXCHANGES: usize = 2;
 
 /// Fixed-size exchange book store — avoids `HashMap` hashing and heap allocation.
 /// With only 2 exchanges, a linear scan for name→index is faster than hashing.
