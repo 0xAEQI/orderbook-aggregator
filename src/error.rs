@@ -1,4 +1,4 @@
-//! Unified error types for the order book aggregator.
+//! Unified error type for exchange adapter failures.
 
 use thiserror::Error;
 

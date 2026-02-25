@@ -25,6 +25,7 @@ use crate::types::OrderBook;
 
 use super::Exchange;
 
+/// Binance partial book depth adapter (`depth20@100ms` stream).
 pub struct Binance {
     pub metrics: Arc<ExchangeMetrics>,
 }

@@ -32,6 +32,7 @@ use super::Exchange;
 
 const BITSTAMP_WS_URL: &str = "wss://ws.bitstamp.net";
 
+/// Bitstamp `order_book` channel adapter (full snapshots, top 100 levels).
 pub struct Bitstamp {
     pub metrics: Arc<ExchangeMetrics>,
 }

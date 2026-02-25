@@ -1,4 +1,12 @@
-//! Simple gRPC client that connects to the aggregator and prints the stream.
+//! Demo gRPC client for the order book aggregator.
+//!
+//! Connects to the `BookSummary` stream and renders a live-updating terminal
+//! display of the merged top-10 order book with spread.
+//!
+//! ```bash
+//! cargo run --release --bin client                         # localhost:50051
+//! cargo run --release --bin client -- http://server:50051  # custom address
+//! ```
 
 use tonic::Request;
 

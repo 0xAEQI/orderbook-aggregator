@@ -321,6 +321,7 @@ pub async fn serve_http(port: u16, metrics: Arc<Metrics>, cancel: CancellationTo
         .ok();
 }
 
+/// `GET /health` — returns `OK`, `DEGRADED`, or `DOWN` based on exchange connectivity.
 async fn health(State(m): State<Arc<Metrics>>) -> (StatusCode, &'static str) {
     let connected = m
         .exchanges
@@ -338,6 +339,7 @@ async fn health(State(m): State<Arc<Metrics>>) -> (StatusCode, &'static str) {
     }
 }
 
+/// `GET /metrics` — Prometheus text exposition format.
 async fn prom_metrics(State(m): State<Arc<Metrics>>) -> String {
     m.to_prometheus()
 }

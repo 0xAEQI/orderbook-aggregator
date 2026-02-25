@@ -1,4 +1,8 @@
-//! gRPC server implementing the `OrderbookAggregator` service.
+//! gRPC server implementing the [`OrderbookAggregator`] service.
+//!
+//! Wraps a `watch::Receiver<Summary>` from the merger and streams updates to
+//! connected clients. Protobuf conversion (`to_proto`) happens here — on the
+//! per-client tokio task — keeping the merger free of serialization overhead.
 
 use std::pin::Pin;
 
@@ -15,6 +19,10 @@ pub mod proto {
 
 use proto::orderbook_aggregator_server::OrderbookAggregator;
 
+/// gRPC service backed by a `watch` channel from the merger.
+///
+/// Each `BookSummary` call clones the receiver, so multiple clients share the
+/// same underlying data with zero additional cost on the merger side.
 pub struct OrderbookService {
     summary_rx: watch::Receiver<Summary>,
 }
@@ -43,6 +51,8 @@ impl OrderbookAggregator for OrderbookService {
     }
 }
 
+/// Convert internal `Summary` (stack-allocated `ArrayVec`) to Protobuf types
+/// (heap-allocated `Vec<Level>` + `String`). Runs on the gRPC handler task.
 fn to_proto(summary: Summary) -> proto::Summary {
     proto::Summary {
         spread: summary.spread,

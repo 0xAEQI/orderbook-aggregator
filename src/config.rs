@@ -1,7 +1,9 @@
-//! CLI configuration via clap.
+//! CLI configuration parsed from command-line arguments via [`clap`].
 
 use clap::Parser;
 
+/// Validate that the trading pair symbol is non-empty and alphanumeric,
+/// then normalize to lowercase (exchanges expect lowercase symbols).
 fn validate_symbol(s: &str) -> Result<String, String> {
     if s.is_empty() {
         return Err("symbol cannot be empty".to_string());

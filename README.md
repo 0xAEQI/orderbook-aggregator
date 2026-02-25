@@ -145,7 +145,7 @@ The only remaining allocations are the WebSocket frame `String` (from tokio-tung
 
 ### SIMD-Accelerated JSON + Float Parsing
 
-- **simd-json**: AVX2/SSE4.2 vectorized tokenizer — processes 32 bytes per cycle vs 1 byte for scalar `serde_json`. Drop-in via serde `Deserialize`.
+- **simd-json**: AVX2/SSE4.2 vectorized tokenizer — classifies 32 bytes per instruction vs 1 byte for scalar `serde_json`. Drop-in via serde `Deserialize`.
 - **Zero-copy `#[serde(borrow)]`**: `[&str; 2]` price/qty pairs borrowed directly from the WS frame buffer. No `String` allocation.
 - **fast-float**: Eisel-Lemire float parsing — 2-3x faster than `str::parse::<f64>()`.
 - **Bitstamp level cap**: Custom serde visitor deserializes only the first 20 of 100 levels, draining the rest with `IgnoredAny` — avoids creating 160 unused serde objects per message.
