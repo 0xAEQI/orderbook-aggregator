@@ -8,15 +8,18 @@ RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/ap
 # Cache dependency build: copy manifests first, build with dummy src.
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY proto/ proto/
-RUN mkdir -p src && \
+RUN mkdir -p src benches && \
     echo 'fn main() {}' > src/main.rs && \
     echo 'fn main() {}' > src/client.rs && \
+    touch src/lib.rs && \
+    echo 'fn main() {}' > benches/hot_path.rs && \
     cargo build --release && \
-    rm -rf src
+    rm -rf src benches
 
 # Build the real binary.
 COPY src/ src/
-RUN touch src/main.rs src/client.rs && cargo build --release
+COPY benches/ benches/
+RUN touch src/main.rs src/client.rs src/lib.rs benches/hot_path.rs && cargo build --release
 
 # --- Runtime ---
 FROM debian:bookworm-slim
