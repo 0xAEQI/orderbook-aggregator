@@ -169,9 +169,15 @@ impl Exchange for Bitstamp {
                                                         let book = parse_book(&bts_msg.data, t0);
                                                         self.metrics.decode_latency.record(t0.elapsed());
                                                         self.metrics.messages.fetch_add(1, Relaxed);
-                                                        if sender.send(book).await.is_err() {
-                                                            warn!(exchange = "bitstamp", "channel closed, stopping");
-                                                            return Ok(());
+                                                        match sender.try_send(book) {
+                                                            Ok(()) => {}
+                                                            Err(mpsc::error::TrySendError::Full(_)) => {
+                                                                warn!(exchange = "bitstamp", "channel full, dropping snapshot");
+                                                            }
+                                                            Err(mpsc::error::TrySendError::Closed(_)) => {
+                                                                warn!(exchange = "bitstamp", "channel closed, stopping");
+                                                                return Ok(());
+                                                            }
                                                         }
                                                     }
                                                     "bts:subscription_succeeded" => {

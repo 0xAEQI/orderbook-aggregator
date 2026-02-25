@@ -42,6 +42,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "starting orderbook aggregator"
     );
 
+    // Bind gRPC listener eagerly — fail fast if port is taken, before spawning
+    // exchange connections or background tasks.
+    let grpc_listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port)).await?;
+    let grpc_addr = grpc_listener.local_addr()?;
+    info!(%grpc_addr, "gRPC server listening");
+
     let cancel = CancellationToken::new();
 
     // Register metrics — adding a new exchange is a one-line change here.
@@ -105,16 +111,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
     };
 
-    // Start gRPC server.
-    let addr = format!("0.0.0.0:{}", config.port).parse()?;
+    // gRPC server on the pre-bound listener.
     let service = OrderbookService::new(summary_rx);
-
-    info!(%addr, "gRPC server listening");
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(grpc_listener);
 
     let server_cancel = cancel.clone();
     let server = Server::builder()
         .add_service(OrderbookAggregatorServer::new(service))
-        .serve_with_shutdown(addr, async move {
+        .serve_with_incoming_shutdown(incoming, async move {
             server_cancel.cancelled().await;
         });
 

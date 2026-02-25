@@ -36,7 +36,9 @@ impl OrderbookAggregator for OrderbookService {
         _request: Request<proto::Empty>,
     ) -> Result<Response<Self::BookSummaryStream>, Status> {
         let rx = self.summary_rx.clone();
-        let stream = WatchStream::new(rx).map(|summary| Ok(to_proto(summary)));
+        // `from_changes` skips the initial default (empty) Summary and only
+        // yields once at least one exchange has published real data.
+        let stream = WatchStream::from_changes(rx).map(|summary| Ok(to_proto(summary)));
         Ok(Response::new(Box::pin(stream)))
     }
 }

@@ -98,9 +98,15 @@ impl Exchange for Binance {
                                                     let book = parse_snapshot(&snapshot, t0);
                                                     self.metrics.decode_latency.record(t0.elapsed());
                                                     self.metrics.messages.fetch_add(1, Relaxed);
-                                                    if sender.send(book).await.is_err() {
-                                                        warn!(exchange = "binance", "channel closed, stopping");
-                                                        return Ok(());
+                                                    match sender.try_send(book) {
+                                                        Ok(()) => {}
+                                                        Err(mpsc::error::TrySendError::Full(_)) => {
+                                                            warn!(exchange = "binance", "channel full, dropping snapshot");
+                                                        }
+                                                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                                                            warn!(exchange = "binance", "channel closed, stopping");
+                                                            return Ok(());
+                                                        }
                                                     }
                                                 }
                                                 Err(e) => {
