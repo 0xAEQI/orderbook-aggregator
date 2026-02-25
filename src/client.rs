@@ -99,7 +99,7 @@ fn render(frame: &mut Frame, app: &App) {
     let header = Line::from(vec![
         Span::styled("  EXCHANGE  ", Style::new().fg(DIM).bold()),
         Span::styled("         PRICE", Style::new().fg(DIM).bold()),
-        Span::styled("           QTY", Style::new().fg(DIM).bold()),
+        Span::styled("          SIZE", Style::new().fg(DIM).bold()),
         Span::styled("  DEPTH", Style::new().fg(DIM).bold()),
     ]);
 
