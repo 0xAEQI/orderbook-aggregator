@@ -5,6 +5,7 @@
 
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
+use std::time::Instant;
 
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -71,10 +72,12 @@ impl Exchange for Binance {
                                 match msg {
                                     Some(Ok(msg)) => {
                                         if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
+                                            let t0 = Instant::now();
                                             match serde_json::from_str::<DepthSnapshot>(&text) {
                                                 Ok(snapshot) => {
-                                                    self.metrics.binance_msgs.fetch_add(1, Relaxed);
                                                     let book = parse_snapshot(snapshot);
+                                                    self.metrics.binance_decode.record(t0.elapsed());
+                                                    self.metrics.binance_msgs.fetch_add(1, Relaxed);
                                                     let _ = sender.send(book);
                                                 }
                                                 Err(e) => {

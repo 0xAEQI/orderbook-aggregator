@@ -132,6 +132,64 @@
         },
         "overrides": []
       }
+    },
+    {
+      "title": "Decode Latency P50 / P99 / P99.9 (by exchange)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(orderbook_decode_duration_seconds_bucket[1m])) by (le, exchange))",
+          "legendFormat": "{{exchange}} P50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(orderbook_decode_duration_seconds_bucket[1m])) by (le, exchange))",
+          "legendFormat": "{{exchange}} P99",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.999, sum(rate(orderbook_decode_duration_seconds_bucket[1m])) by (le, exchange))",
+          "legendFormat": "{{exchange}} P99.9",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "fillOpacity": 5 }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "Merge Latency P50 / P99 / P99.9",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(orderbook_merge_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "P50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(orderbook_merge_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "P99",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.999, sum(rate(orderbook_merge_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "P99.9",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "fillOpacity": 5 }
+        },
+        "overrides": []
+      }
     }
   ],
   "refresh": "5s",

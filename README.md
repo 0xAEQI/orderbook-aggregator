@@ -95,6 +95,8 @@ With `docker compose up`, Grafana is pre-provisioned at [localhost:3000](http://
 - Messages/sec per exchange
 - Errors/sec per exchange
 - Merge operations/sec
+- Decode latency P50/P99/P99.9 per exchange
+- Merge latency P50/P99/P99.9
 - Uptime
 
 The raw endpoints are also available for direct use:
@@ -110,6 +112,8 @@ Exposed metrics:
 - `orderbook_merges_total` — Order book merge operations
 - `orderbook_exchange_up{exchange}` — Connection status gauge (1=connected)
 - `orderbook_uptime_seconds` — Process uptime
+- `orderbook_decode_duration_seconds{exchange}` — Histogram: JSON decode + parse latency (1μs–10ms buckets)
+- `orderbook_merge_duration_seconds` — Histogram: order book merge latency (1μs–10ms buckets)
 
 ## Sorting Logic
 

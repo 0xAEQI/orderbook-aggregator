@@ -6,6 +6,7 @@
 
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
+use std::time::Instant;
 
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -100,10 +101,12 @@ impl Exchange for Bitstamp {
                                             Ok(bts_msg) => {
                                                 match bts_msg.event.as_str() {
                                                     "data" => {
+                                                        let t0 = Instant::now();
                                                         match serde_json::from_value::<BookData>(bts_msg.data) {
                                                             Ok(book_data) => {
-                                                                self.metrics.bitstamp_msgs.fetch_add(1, Relaxed);
                                                                 let book = parse_book(book_data);
+                                                                self.metrics.bitstamp_decode.record(t0.elapsed());
+                                                                self.metrics.bitstamp_msgs.fetch_add(1, Relaxed);
                                                                 let _ = sender.send(book);
                                                             }
                                                             Err(e) => {

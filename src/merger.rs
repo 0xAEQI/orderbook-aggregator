@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::{broadcast, watch};
 use tokio_util::sync::CancellationToken;
@@ -46,7 +47,9 @@ pub async fn run(
                 match result {
                     Ok(book) => {
                         books.insert(book.exchange, book);
+                        let t0 = Instant::now();
                         let summary = merge(&books, &mut bid_buf, &mut ask_buf);
+                        metrics.merge_latency.record(t0.elapsed());
                         metrics.merges.fetch_add(1, Relaxed);
                         debug!(
                             spread = summary.spread,
