@@ -31,6 +31,8 @@ rand = "0.9"
 axum = "0.7"
 fast-float = "0.2"
 arrayvec = { version = "0.7", features = ["serde"] }
+ratatui = "0.29"
+crossterm = "0.28"
 
 [build-dependencies]
 tonic-build = "0.12"
