@@ -1,5 +1,7 @@
 # Order Book Aggregator
 
+[![CI](https://github.com/0xAEQI/orderbook-aggregator/actions/workflows/ci.yml/badge.svg)](https://github.com/0xAEQI/orderbook-aggregator/actions/workflows/ci.yml)
+
 Real-time order book aggregator that connects to **Binance** and **Bitstamp** WebSocket feeds, merges their order books, and streams the top-10 bid/ask levels with spread via **gRPC**.
 
 ## Architecture
@@ -24,7 +26,7 @@ WebSocket Feeds              Merger               gRPC Server
 1. Exchange adapters connect via WebSocket with `TCP_NODELAY` and `write_buffer_size: 0`
 2. Each adapter parses updates into `OrderBook` snapshots (stack-allocated `ArrayVec`) and sends via `mpsc` (move semantics — zero clone overhead)
 3. Merger receives from all exchanges, maintains latest book per exchange in a fixed-size array (no `HashMap`), merges using a k-way cursor algorithm
-4. Merged top-10 + spread published via `tokio::watch` (latest-value semantics — clients always get the most recent state, intermediate snapshots between reads are irrelevant for order book data)
+4. Merged top-10 + spread published via `tokio::watch` (latest-value semantics — clients always get the most recent state)
 5. gRPC clients subscribe and receive the stream; Protobuf conversion happens on the client handler task, not the merger
 
 ## Quick Start (Docker)
@@ -61,7 +63,7 @@ RUST_LOG=debug cargo run --release --bin orderbook-aggregator
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-s, --symbol` | `ethbtc` | Trading pair (must exist on both exchanges) |
+| `-s, --symbol` | `ethbtc` | Trading pair (alphanumeric, must exist on both exchanges) |
 | `-p, --port` | `50051` | gRPC server listen port |
 | `-m, --metrics-port` | `9090` | Metrics/health HTTP port |
 
@@ -132,26 +134,21 @@ The merged order book puts **best deals first**:
 
 The entire path from WebSocket frame receipt through merge output is zero-allocation:
 
-| Component | Before | After |
-|-----------|--------|-------|
-| `Level` type | `Clone` | `Copy` (`&'static str` + `f64` + `f64`) |
-| `OrderBook` bids/asks | `Vec<Level>` (heap) | `ArrayVec<Level, 20>` (stack) |
-| `Summary` bids/asks | `Vec<Level>` (heap) | `ArrayVec<Level, 10>` (stack) |
-| Exchange → merger channel | `broadcast` (clone on recv) | `mpsc` (move semantics) |
-| JSON deserialization | `Vec<[&str; 2]>` (heap) | `ArrayVec<[&str; 2], N>` (stack) |
-| Exchange book store | `HashMap` (heap + hashing) | Fixed `[Option<OrderBook>; 8]` array |
+- **`Level`** is `Copy` (`&'static str` + `f64` + `f64`) — no heap, no clone
+- **`OrderBook`** bids/asks use `ArrayVec<Level, 20>` — stack-allocated, fixed capacity
+- **`Summary`** bids/asks use `ArrayVec<Level, 10>` — stack-allocated merged output
+- **Exchange → merger channel** uses `tokio::sync::mpsc` with move semantics — the `OrderBook` value is transferred, not cloned
+- **JSON deserialization** borrows `[&str; 2]` pairs into stack-allocated `ArrayVec` — no `String` or `Vec` allocation
+- **Exchange book store** uses a fixed `[Option<OrderBook>; 8]` array with linear scan — no `HashMap` hashing or heap allocation
 
 The only remaining allocations are the WebSocket frame `String` (from tokio-tungstenite, unavoidable without kernel bypass) and Protobuf encoding on the gRPC egress path (cold, per-client).
-
-### Build Configuration
-
-`.cargo/config.toml` sets `target-cpu=native`, enabling AVX2/SSE4.2 instructions for `simd-json`'s vectorized JSON tokenizer. The release profile uses `lto = "fat"` for whole-program link-time optimization across all crates, `codegen-units = 1` for maximum inlining across compilation units, and `strip = true` to reduce binary size.
 
 ### SIMD-Accelerated JSON + Float Parsing
 
 - **simd-json**: AVX2/SSE4.2 vectorized tokenizer — processes 32 bytes per cycle vs 1 byte for scalar `serde_json`. Drop-in via serde `Deserialize`.
 - **Zero-copy `#[serde(borrow)]`**: `[&str; 2]` price/qty pairs borrowed directly from the WS frame buffer. No `String` allocation.
-- **fast-float**: SIMD-accelerated Eisel-Lemire float parsing — 2-3x faster than `str::parse`. 80 float parses per Binance message.
+- **fast-float**: Eisel-Lemire float parsing — 2-3x faster than `str::parse::<f64>()`.
+- **Bitstamp level cap**: Custom serde visitor deserializes only the first 20 of 100 levels, draining the rest with `IgnoredAny` — avoids creating 160 unused serde objects per message.
 
 ### K-Way Merge
 
@@ -159,13 +156,17 @@ Both exchanges send pre-sorted order books. Instead of concatenating and sorting
 
 ### O(1) Histogram Record
 
-The Prometheus histogram stores per-bucket (non-cumulative) counts across 16 logarithmic buckets (100ns-100ms). Each `record()` does one `fetch_add` — O(1). Cumulative sums are computed lazily on the cold `/metrics` scrape path.
+The Prometheus histogram stores per-bucket (non-cumulative) counts across 16 logarithmic buckets (100ns–100ms). Each `record()` does one `fetch_add` — O(1). Cumulative sums are computed lazily on the cold `/metrics` scrape path.
+
+### Build Configuration
+
+`.cargo/config.toml` sets `target-cpu=native`, enabling AVX2/SSE4.2 instructions for `simd-json`'s vectorized JSON tokenizer. The release profile uses `lto = "fat"` for whole-program link-time optimization across all crates, `codegen-units = 1` for maximum inlining across compilation units, and `strip = true` to reduce binary size.
 
 ## Design Decisions
 
 ### Channel Architecture
 
-- **`tokio::sync::mpsc`** (exchange → merger): Move semantics — the `OrderBook` is transferred without cloning, unlike `broadcast` which clones on every receive. Combined with `ArrayVec`-based types, the entire transfer is a stack-value move.
+- **`tokio::sync::mpsc`** (exchange → merger): Move semantics — the `OrderBook` is transferred without cloning. Combined with `ArrayVec`-based types, the entire transfer is a stack-value move. Adapters use `try_send` to avoid blocking the WebSocket read loop when the channel is full — for order book data, dropping a stale snapshot is correct since the next frame contains a newer one.
 - **`tokio::watch`** (merger → gRPC): Latest-value semantics. Clients always get the most recent merged state. For order book data, intermediate states between reads are stale and irrelevant — only the current top-of-book matters.
 
 ### Floating-Point Prices
@@ -174,7 +175,7 @@ Prices use `f64` to match the gRPC proto's `double` type. For a production syste
 
 ### Protobuf Conversion at the Edge
 
-The merger publishes our internal `Summary` (stack-allocated `ArrayVec`) via the watch channel. The conversion to Protobuf types (which require heap-allocated `Vec` and `String`) happens inside the gRPC request handler, on the tokio worker thread serving that client connection. This keeps the merger task free of any allocation or serialization overhead.
+The merger publishes the internal `Summary` (stack-allocated `ArrayVec`) via the watch channel. The conversion to Protobuf types (which require heap-allocated `Vec` and `String`) happens inside the gRPC request handler, on the tokio worker thread serving that client connection. This keeps the merger task free of any allocation or serialization overhead.
 
 ### Reconnection
 
@@ -196,4 +197,7 @@ For a production-grade system at Keyrock-level latency requirements, the followi
 cargo test
 ```
 
-Tests cover merger logic: cross-exchange merging, truncation to top-10, empty book handling, tiebreaking across exchanges, and k-way merge interleave correctness.
+10 tests covering:
+- **Merger**: cross-exchange merging, truncation to top-10, empty book handling, tiebreaking by amount, k-way merge interleave correctness
+- **Binance parser**: realistic depth20 JSON payload, unknown field tolerance
+- **Bitstamp parser**: data message parsing, non-data event handling, custom deserializer cap at 20 levels
