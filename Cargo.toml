@@ -35,6 +35,6 @@ fast-float = "0.2"
 tonic-build = "0.12"
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 strip = true

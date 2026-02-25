@@ -130,7 +130,7 @@ The merged order book puts **best deals first**:
 
 ### Build Configuration
 
-`.cargo/config.toml` sets `target-cpu=native`, enabling AVX2/SSE4.2 instructions for `simd-json`'s vectorized JSON tokenizer. The release profile uses `lto = "thin"` for cross-module link-time optimization, `codegen-units = 1` for maximum inlining across compilation units, and `strip = true` to reduce binary size.
+`.cargo/config.toml` sets `target-cpu=native`, enabling AVX2/SSE4.2 instructions for `simd-json`'s vectorized JSON tokenizer. The release profile uses `lto = "fat"` for whole-program link-time optimization across all crates, `codegen-units = 1` for maximum inlining across compilation units, and `strip = true` to reduce binary size.
 
 ### SIMD-Accelerated Float Parsing
 
