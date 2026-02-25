@@ -11,7 +11,7 @@ COPY proto/ proto/
 RUN mkdir -p src && \
     echo 'fn main() {}' > src/main.rs && \
     echo 'fn main() {}' > src/client.rs && \
-    cargo build --release 2>/dev/null || true && \
+    cargo build --release && \
     rm -rf src
 
 # Build the real binary.

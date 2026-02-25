@@ -35,11 +35,16 @@ WebSocket Feeds              Merger               gRPC Server
 docker compose up
 ```
 
-This starts everything:
+This starts the server and monitoring stack:
 - **Server** — Binance + Bitstamp WS → merged gRPC stream on `:50051`
-- **Client** — prints the live merged order book in the terminal
 - **Prometheus** — scrapes metrics every 5s, UI at [localhost:9091](http://localhost:9091)
 - **Grafana** — pre-built dashboard at [localhost:3000](http://localhost:3000) (anonymous access, no login needed)
+
+To launch the TUI client (requires an interactive terminal):
+
+```bash
+docker compose run --rm client
+```
 
 No Rust toolchain required.
 
@@ -75,7 +80,7 @@ Built-in client for testing:
 # Terminal 1: start the server
 cargo run --release --bin orderbook-aggregator
 
-# Terminal 2: start the client
+# Terminal 2: start the TUI client
 cargo run --release --bin client
 
 # Or connect to a different address
