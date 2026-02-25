@@ -33,7 +33,13 @@ WebSocket Feeds            Merger              gRPC Server
 docker compose up
 ```
 
-This starts the server (Binance + Bitstamp WS → gRPC on `:50051`, metrics on `:9090`) and a client that prints the live merged order book. No Rust toolchain required.
+This starts everything:
+- **Server** — Binance + Bitstamp WS → merged gRPC stream on `:50051`
+- **Client** — prints the live merged order book in the terminal
+- **Prometheus** — scrapes metrics every 5s, UI at [localhost:9091](http://localhost:9091)
+- **Grafana** — pre-built dashboard at [localhost:3000](http://localhost:3000) (anonymous access, no login needed)
+
+No Rust toolchain required.
 
 ## Build & Run (Cargo)
 
@@ -83,17 +89,24 @@ grpcurl -plaintext -import-path proto -proto orderbook.proto \
 
 ## Monitoring
 
-```bash
-# Health check (returns OK, DEGRADED, or DOWN with appropriate HTTP status)
-curl localhost:9090/health
+With `docker compose up`, Grafana is pre-provisioned at [localhost:3000](http://localhost:3000) with a dashboard showing:
 
-# Prometheus metrics
-curl localhost:9090/metrics
+- Exchange connectivity status (UP/DOWN)
+- Messages/sec per exchange
+- Errors/sec per exchange
+- Merge operations/sec
+- Uptime
+
+The raw endpoints are also available for direct use:
+
+```bash
+curl localhost:9090/health    # OK, DEGRADED, or DOWN (inside container network)
+curl localhost:9090/metrics   # Prometheus text format
 ```
 
 Exposed metrics:
-- `orderbook_messages_total{exchange}` — WebSocket messages received per exchange
-- `orderbook_errors_total{exchange}` — Parse/connection errors per exchange
+- `orderbook_messages_total{exchange}` — WebSocket messages received
+- `orderbook_errors_total{exchange}` — Parse/connection errors
 - `orderbook_merges_total` — Order book merge operations
 - `orderbook_exchange_up{exchange}` — Connection status gauge (1=connected)
 - `orderbook_uptime_seconds` — Process uptime

@@ -3,7 +3,6 @@ services:
     build: .
     ports:
       - "50051:50051"
-      - "9090:9090"
     environment:
       - RUST_LOG=info
     command: ["--symbol", "ethbtc", "--port", "50051", "--metrics-port", "9090"]
@@ -15,3 +14,26 @@ services:
     depends_on:
       - server
     restart: on-failure
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - server
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
