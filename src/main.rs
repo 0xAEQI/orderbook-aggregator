@@ -78,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let tx = book_tx.clone();
         let cancel = cancel.clone();
         tokio::spawn(async move {
-            if let Err(e) = Box::pin(bitstamp.connect(symbol, tx, cancel)).await {
+            if let Err(e) = bitstamp.connect(symbol, tx, cancel).await {
                 tracing::error!(exchange = "bitstamp", error = %e, "fatal error");
             }
         })

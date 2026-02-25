@@ -16,6 +16,7 @@ use std::time::Instant;
 use arrayvec::ArrayVec;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
+use serde::de::{Deserializer, SeqAccess, Visitor};
 use serde_json::json;
 use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async_tls_with_config;
@@ -25,7 +26,7 @@ use tracing::{error, info, warn};
 
 use crate::error::Result;
 use crate::metrics::ExchangeMetrics;
-use crate::types::OrderBook;
+use crate::types::{MAX_LEVELS, OrderBook};
 
 use super::Exchange;
 
@@ -45,14 +46,53 @@ struct BitstampMessage<'a> {
     data: BookFields<'a>,
 }
 
-/// Bitstamp sends up to 100 levels per side. We cap deserialization at 100 to
-/// avoid heap allocation — `parse_levels` further caps at `MAX_LEVELS` (20).
+/// Bitstamp sends up to 100 levels per side. We deserialize only `MAX_LEVELS`
+/// (20) per side and discard the rest — avoids processing 80 unused levels
+/// and keeps the future small enough to avoid `Box::pin`.
 #[derive(Deserialize, Default)]
 struct BookFields<'a> {
-    #[serde(borrow, default)]
-    bids: ArrayVec<[&'a str; 2], 100>,
-    #[serde(borrow, default)]
-    asks: ArrayVec<[&'a str; 2], 100>,
+    #[serde(borrow, default, deserialize_with = "deserialize_capped_levels")]
+    bids: ArrayVec<[&'a str; 2], MAX_LEVELS>,
+    #[serde(borrow, default, deserialize_with = "deserialize_capped_levels")]
+    asks: ArrayVec<[&'a str; 2], MAX_LEVELS>,
+}
+
+/// Deserialize a JSON array of `[price, qty]` pairs, keeping only the first
+/// `MAX_LEVELS` and discarding the rest. Bitstamp sends 100 levels but the
+/// merger only needs 20 — this avoids creating 80 unused serde objects.
+fn deserialize_capped_levels<'de, D>(
+    deserializer: D,
+) -> std::result::Result<ArrayVec<[&'de str; 2], MAX_LEVELS>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct CappedVisitor;
+
+    impl<'de> Visitor<'de> for CappedVisitor {
+        type Value = ArrayVec<[&'de str; 2], MAX_LEVELS>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "an array of [price, qty] pairs")
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> std::result::Result<Self::Value, A::Error> {
+            let mut levels = ArrayVec::new();
+            while levels.len() < MAX_LEVELS {
+                match seq.next_element()? {
+                    Some(pair) => levels.push(pair),
+                    None => return Ok(levels),
+                }
+            }
+            // Drain remaining elements without storing them.
+            while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+            Ok(levels)
+        }
+    }
+
+    deserializer.deserialize_seq(CappedVisitor)
 }
 
 impl Exchange for Bitstamp {
