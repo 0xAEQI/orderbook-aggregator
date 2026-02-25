@@ -27,7 +27,15 @@ WebSocket Feeds            Merger              gRPC Server
 4. Merged top-10 + spread published via `tokio::watch` (latest-value semantics)
 5. gRPC clients subscribe and receive the stream in real-time
 
-## Build & Run
+## Quick Start (Docker)
+
+```bash
+docker compose up
+```
+
+This starts the server (Binance + Bitstamp WS → gRPC on `:50051`, metrics on `:9090`) and a client that prints the live merged order book. No Rust toolchain required.
+
+## Build & Run (Cargo)
 
 ```bash
 # Build

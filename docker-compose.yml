@@ -1,0 +1,17 @@
+services:
+  server:
+    build: .
+    ports:
+      - "50051:50051"
+      - "9090:9090"
+    environment:
+      - RUST_LOG=info
+    command: ["--symbol", "ethbtc", "--port", "50051", "--metrics-port", "9090"]
+
+  client:
+    build: .
+    entrypoint: ["orderbook-client"]
+    command: ["http://server:50051"]
+    depends_on:
+      - server
+    restart: on-failure
