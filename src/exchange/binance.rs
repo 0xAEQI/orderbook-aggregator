@@ -15,13 +15,13 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::error::Result;
-use crate::metrics::Metrics;
+use crate::metrics::ExchangeMetrics;
 use crate::types::{Level, OrderBook};
 
 use super::Exchange;
 
 pub struct Binance {
-    pub metrics: Arc<Metrics>,
+    pub metrics: Arc<ExchangeMetrics>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,7 +56,7 @@ impl Exchange for Binance {
             match connect_async_tls_with_config(&url, Some(ws_config), true, None).await {
                 Ok((ws_stream, _)) => {
                     info!(exchange = "binance", "connected");
-                    self.metrics.binance_connected.store(true, Relaxed);
+                    self.metrics.connected.store(true, Relaxed);
                     backoff_ms = 1000;
 
                     let (_, mut read) = ws_stream.split();
@@ -65,7 +65,7 @@ impl Exchange for Binance {
                         tokio::select! {
                             _ = cancel.cancelled() => {
                                 info!(exchange = "binance", "shutting down");
-                                self.metrics.binance_connected.store(false, Relaxed);
+                                self.metrics.connected.store(false, Relaxed);
                                 return Ok(());
                             }
                             msg = read.next() => {
@@ -76,19 +76,19 @@ impl Exchange for Binance {
                                             match serde_json::from_str::<DepthSnapshot>(&text) {
                                                 Ok(snapshot) => {
                                                     let book = parse_snapshot(snapshot, t0);
-                                                    self.metrics.binance_decode.record(t0.elapsed());
-                                                    self.metrics.binance_msgs.fetch_add(1, Relaxed);
+                                                    self.metrics.decode_latency.record(t0.elapsed());
+                                                    self.metrics.messages.fetch_add(1, Relaxed);
                                                     let _ = sender.send(book);
                                                 }
                                                 Err(e) => {
-                                                    self.metrics.binance_errors.fetch_add(1, Relaxed);
+                                                    self.metrics.errors.fetch_add(1, Relaxed);
                                                     warn!(exchange = "binance", error = %e, "parse error");
                                                 }
                                             }
                                         }
                                     }
                                     Some(Err(e)) => {
-                                        self.metrics.binance_errors.fetch_add(1, Relaxed);
+                                        self.metrics.errors.fetch_add(1, Relaxed);
                                         warn!(exchange = "binance", error = %e, "ws error");
                                         break;
                                     }
@@ -101,10 +101,10 @@ impl Exchange for Binance {
                         }
                     }
 
-                    self.metrics.binance_connected.store(false, Relaxed);
+                    self.metrics.connected.store(false, Relaxed);
                 }
                 Err(e) => {
-                    self.metrics.binance_errors.fetch_add(1, Relaxed);
+                    self.metrics.errors.fetch_add(1, Relaxed);
                     error!(exchange = "binance", error = %e, "connection failed");
                 }
             }

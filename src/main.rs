@@ -45,7 +45,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let cancel = CancellationToken::new();
-    let metrics = Arc::new(Metrics::default());
+
+    // Register metrics — adding a new exchange is a one-line change here.
+    let metrics = Arc::new(Metrics::register(&["binance", "bitstamp"]));
 
     // Broadcast channel for exchange → merger communication.
     let (book_tx, book_rx) = broadcast::channel::<types::OrderBook>(64);
@@ -54,11 +56,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (summary_tx, summary_rx) = watch::channel(Summary::default());
 
     // Spawn exchange WebSocket tasks.
+    // Each adapter gets its own Arc<ExchangeMetrics> — no field lookup on the hot path.
     let binance = Binance {
-        metrics: metrics.clone(),
+        metrics: metrics.exchange("binance"),
     };
     let bitstamp = Bitstamp {
-        metrics: metrics.clone(),
+        metrics: metrics.exchange("bitstamp"),
     };
 
     let binance_handle = {
