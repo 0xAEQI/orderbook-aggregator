@@ -13,12 +13,17 @@ WebSocket Feeds            Merger              gRPC Server
 │ Bitstamp │─broadcast──▶│       │           │          │
 │ order_book│             └───────┘           └──────────┘
 └──────────┘
+          ┌──────────────────────────────┐
+          │  HTTP :9090                  │
+          │  GET /health → OK/DEGRADED   │
+          │  GET /metrics → Prometheus   │
+          └──────────────────────────────┘
 ```
 
 **Data flow:**
-1. Exchange adapters connect via WebSocket with automatic reconnection
+1. Exchange adapters connect via WebSocket with `TCP_NODELAY` and `write_buffer_size: 0`
 2. Each adapter parses updates into `OrderBook` snapshots and sends via `broadcast`
-3. Merger receives from all exchanges, maintains latest book per exchange, merges and sorts
+3. Merger receives from all exchanges, maintains latest book per exchange, merges using pre-allocated buffers
 4. Merged top-10 + spread published via `tokio::watch` (latest-value semantics)
 5. gRPC clients subscribe and receive the stream in real-time
 
@@ -28,11 +33,11 @@ WebSocket Feeds            Merger              gRPC Server
 # Build
 cargo build --release
 
-# Run with default settings (ethbtc on port 50051)
+# Run with default settings (ethbtc, gRPC :50051, metrics :9090)
 cargo run --release --bin orderbook-aggregator
 
-# Custom pair and port
-cargo run --release --bin orderbook-aggregator -- --symbol btcusdt --port 50052
+# Custom pair and ports
+cargo run --release --bin orderbook-aggregator -- --symbol btcusdt --port 50052 --metrics-port 9091
 
 # Enable debug logging
 RUST_LOG=debug cargo run --release --bin orderbook-aggregator
@@ -44,84 +49,76 @@ RUST_LOG=debug cargo run --release --bin orderbook-aggregator
 |------|---------|-------------|
 | `-s, --symbol` | `ethbtc` | Trading pair (must exist on both exchanges) |
 | `-p, --port` | `50051` | gRPC server listen port |
+| `-m, --metrics-port` | `9090` | Metrics/health HTTP port |
 
 ## Testing the gRPC Stream
 
-The project includes a built-in client for testing:
+Built-in client for testing:
 
 ```bash
-# In terminal 1: start the server
+# Terminal 1: start the server
 cargo run --release --bin orderbook-aggregator
 
-# In terminal 2: start the client
+# Terminal 2: start the client
 cargo run --release --bin client
 
 # Or connect to a different address
 cargo run --release --bin client -- http://localhost:50052
 ```
 
-Alternatively, using `grpcurl`:
+Or with `grpcurl`:
 
 ```bash
 grpcurl -plaintext -import-path proto -proto orderbook.proto \
   localhost:50051 orderbook.OrderbookAggregator/BookSummary
 ```
 
+## Monitoring
+
+```bash
+# Health check (returns OK, DEGRADED, or DOWN with appropriate HTTP status)
+curl localhost:9090/health
+
+# Prometheus metrics
+curl localhost:9090/metrics
+```
+
+Exposed metrics:
+- `orderbook_messages_total{exchange}` — WebSocket messages received per exchange
+- `orderbook_errors_total{exchange}` — Parse/connection errors per exchange
+- `orderbook_merges_total` — Order book merge operations
+- `orderbook_exchange_up{exchange}` — Connection status gauge (1=connected)
+- `orderbook_uptime_seconds` — Process uptime
+
 ## Sorting Logic
 
-The merged order book follows the principle that **best deals come first**:
+The merged order book puts **best deals first**:
 
 - **Bids** (buy orders): highest price first — a seller gets the best price from the highest bidder
 - **Asks** (sell orders): lowest price first — a buyer gets the best price from the lowest seller
-- **Tiebreaker**: at the same price, the larger amount comes first (more liquidity is a better deal)
-- **Spread**: `best_ask - best_bid` (the gap between the best buy and sell prices)
+- **Tiebreaker**: at the same price, the larger amount comes first (more liquidity)
+- **Spread**: `best_ask - best_bid`
 
 ## Design Decisions
 
 ### Channel Architecture
 
-- **`tokio::broadcast`** (exchange → merger): Multiple exchanges fan into a single merger. Handles backpressure by dropping old messages, which is correct behavior — stale order book snapshots are worthless.
-- **`tokio::watch`** (merger → gRPC): Latest-value semantics. When the merger updates faster than a client consumes, the client always gets the most recent state. This is the correct choice for order book data — intermediate states between two reads are irrelevant; only the latest merged book matters.
+- **`tokio::broadcast`** (exchange → merger): Multiple exchanges fan into a single merger. Handles backpressure by dropping old messages — stale order book snapshots are worthless.
+- **`tokio::watch`** (merger → gRPC): Latest-value semantics. Clients always get the most recent state. Intermediate states between two reads are irrelevant for order book data.
 
-### Exchange Adapters
+### Low-Latency WebSocket
 
-- **Binance `depth20@100ms`**: Partial depth stream provides snapshots of the top 20 levels every 100ms. No sequence tracking or REST snapshot needed — the exchange does the bookkeeping.
-- **Bitstamp `order_book` channel**: Full snapshot on each update. Requires an explicit subscribe message after connection.
-- **Reconnection**: Exponential backoff (1s → 30s) with random jitter to prevent thundering herd on network recovery.
+- **`TCP_NODELAY`**: Disables Nagle's algorithm on all WebSocket connections via `connect_async_tls_with_config(..., disable_nagle: true)`.
+- **`write_buffer_size: 0`**: Flushes every WebSocket frame immediately instead of buffering up to 128KB.
+- **`&'static str` exchange names**: Zero heap allocation for the most frequently created type (`Level`).
 
-### Performance Considerations
+### Pre-Allocated Merge Buffers
 
-- **Zero-alloc exchange names**: `Level.exchange` uses `&'static str` instead of `String` — eliminates per-tick heap allocations for the most frequently created type.
-- **Cooperative shutdown**: `CancellationToken` propagated to all tasks — no orphaned connections or spinning loops on Ctrl+C.
-- **Bounded channels**: Broadcast buffer of 64 prevents unbounded memory growth under load.
+Working vectors for the merge sort are allocated once at startup (`Vec::with_capacity(40)`) and reused via `clear()` + `extend()` on every merge cycle. Only the final 10-element result vectors are freshly allocated per cycle (unavoidable since they cross the watch channel).
 
-### What I'd Add in Production
+### Reconnection
 
-- **Metrics**: Prometheus counters for messages received/parsed/errors per exchange, histogram for merge latency
-- **Health endpoint**: HTTP `/health` with per-exchange connectivity status
-- **Sequence validation**: For Binance diff-depth streams (not needed for partial depth, but required for full book)
-- **TCP_NODELAY**: On WebSocket connections to eliminate Nagle's algorithm delay
-- **Pre-allocated merge buffers**: Reuse `Vec` allocations across merge cycles instead of collecting fresh each time
-
-## Proto Schema
-
-```protobuf
-service OrderbookAggregator {
-  rpc BookSummary(Empty) returns (stream Summary);
-}
-
-message Summary {
-  double spread = 1;
-  repeated Level bids = 2;  // Top 10, highest price first
-  repeated Level asks = 3;  // Top 10, lowest price first
-}
-
-message Level {
-  string exchange = 1;
-  double price = 2;
-  double amount = 3;
-}
-```
+Exponential backoff (1s → 30s) with random jitter to prevent thundering herd on network recovery. Each exchange adapter handles its own reconnection loop independently.
 
 ## Running Tests
 
@@ -129,4 +126,4 @@ message Level {
 cargo test
 ```
 
-Tests cover the merger logic: cross-exchange merging, truncation to top-10, empty book handling, and sort tiebreaking by amount.
+Tests cover merger logic: cross-exchange merging, truncation to top-10, empty book handling, sort tiebreaking, and buffer reuse verification.

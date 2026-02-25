@@ -7,8 +7,11 @@ mod config;
 mod error;
 mod exchange;
 mod merger;
+mod metrics;
 mod server;
 mod types;
+
+use std::sync::Arc;
 
 use clap::Parser;
 use tokio::sync::{broadcast, watch};
@@ -18,6 +21,7 @@ use tracing::info;
 
 use config::Config;
 use exchange::{binance::Binance, bitstamp::Bitstamp, Exchange};
+use metrics::Metrics;
 use server::{
     proto::orderbook_aggregator_server::OrderbookAggregatorServer, OrderbookService,
 };
@@ -25,7 +29,6 @@ use types::Summary;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -34,20 +37,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let config = Config::parse();
-    info!(symbol = %config.symbol, port = config.port, "starting orderbook aggregator");
+    info!(
+        symbol = %config.symbol,
+        grpc_port = config.port,
+        metrics_port = config.metrics_port,
+        "starting orderbook aggregator"
+    );
 
     let cancel = CancellationToken::new();
+    let metrics = Arc::new(Metrics::default());
 
     // Broadcast channel for exchange → merger communication.
-    // Buffer of 64: large enough to absorb burst, small enough to keep memory bounded.
     let (book_tx, book_rx) = broadcast::channel::<types::OrderBook>(64);
 
-    // Watch channel for merger → gRPC server communication (latest-value semantics).
+    // Watch channel for merger → gRPC server (latest-value semantics).
     let (summary_tx, summary_rx) = watch::channel(Summary::default());
 
     // Spawn exchange WebSocket tasks.
-    let binance = Binance;
-    let bitstamp = Bitstamp;
+    let binance = Binance {
+        metrics: metrics.clone(),
+    };
+    let bitstamp = Bitstamp {
+        metrics: metrics.clone(),
+    };
 
     let binance_handle = {
         let symbol = config.symbol.clone();
@@ -71,14 +83,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
     };
 
-    // Drop the original sender so the broadcast channel closes when exchanges stop.
+    // Drop the original sender so broadcast closes when exchanges stop.
     drop(book_tx);
 
     // Spawn merger task.
     let merger_handle = {
         let cancel = cancel.clone();
+        let metrics = metrics.clone();
         tokio::spawn(async move {
-            merger::run(book_rx, summary_tx, cancel).await;
+            merger::run(book_rx, summary_tx, metrics, cancel).await;
+        })
+    };
+
+    // Spawn metrics/health HTTP server.
+    let http_handle = {
+        let cancel = cancel.clone();
+        let metrics = metrics.clone();
+        tokio::spawn(async move {
+            metrics::serve_http(config.metrics_port, metrics, cancel).await;
         })
     };
 
@@ -109,7 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     server.await?;
 
     // Wait for all tasks to finish.
-    let _ = tokio::join!(binance_handle, bitstamp_handle, merger_handle);
+    let _ = tokio::join!(binance_handle, bitstamp_handle, merger_handle, http_handle);
 
     info!("shutdown complete");
     Ok(())

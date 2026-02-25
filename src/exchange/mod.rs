@@ -2,6 +2,9 @@
 //!
 //! Each adapter connects to an exchange's depth stream, parses updates into
 //! [`OrderBook`] snapshots, and publishes them via a broadcast channel.
+//!
+//! Connections use `TCP_NODELAY` to eliminate Nagle's algorithm delay and
+//! `write_buffer_size: 0` for immediate WebSocket frame flushing.
 
 pub mod binance;
 pub mod bitstamp;
@@ -24,4 +27,12 @@ pub trait Exchange: Send + Sync + 'static {
         sender: broadcast::Sender<OrderBook>,
         cancel: CancellationToken,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
+}
+
+/// WebSocket config optimized for low-latency reads.
+pub fn ws_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+    tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+        write_buffer_size: 0, // Flush every frame immediately.
+        ..Default::default()
+    }
 }

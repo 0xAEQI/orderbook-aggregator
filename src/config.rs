@@ -13,4 +13,8 @@ pub struct Config {
     /// gRPC server port
     #[arg(short, long, default_value = "50051")]
     pub port: u16,
+
+    /// Metrics/health HTTP port
+    #[arg(short = 'm', long, default_value = "9090")]
+    pub metrics_port: u16,
 }

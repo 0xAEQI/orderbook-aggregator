@@ -4,6 +4,14 @@ version = "0.1.0"
 edition = "2021"
 description = "Real-time order book aggregator: merges Binance + Bitstamp depth and streams top-10 levels via gRPC"
 
+[[bin]]
+name = "orderbook-aggregator"
+path = "src/main.rs"
+
+[[bin]]
+name = "client"
+path = "src/client.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 tonic = "0.12"
@@ -19,14 +27,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"
 rand = "0.8"
-
-[[bin]]
-name = "orderbook-aggregator"
-path = "src/main.rs"
-
-[[bin]]
-name = "client"
-path = "src/client.rs"
+axum = "0.7"
 
 [build-dependencies]
 tonic-build = "0.12"

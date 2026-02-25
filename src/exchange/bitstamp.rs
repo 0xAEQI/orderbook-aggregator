@@ -4,23 +4,29 @@
 //! channel for the configured pair. Bitstamp sends full order book snapshots
 //! on each update (top 100 levels).
 
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::Arc;
+
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::broadcast;
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::connect_async_tls_with_config;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::error::Result;
+use crate::metrics::Metrics;
 use crate::types::{Level, OrderBook};
 
 use super::Exchange;
 
 const BITSTAMP_WS_URL: &str = "wss://ws.bitstamp.net";
 
-pub struct Bitstamp;
+pub struct Bitstamp {
+    pub metrics: Arc<Metrics>,
+}
 
 #[derive(Debug, Deserialize)]
 struct BitstampMessage {
@@ -43,6 +49,7 @@ impl Exchange for Bitstamp {
         cancel: CancellationToken,
     ) -> Result<()> {
         let channel = format!("order_book_{}", symbol.to_lowercase());
+        let ws_config = super::ws_config();
         let mut backoff_ms = 1000u64;
         let max_backoff_ms = 30_000u64;
 
@@ -53,9 +60,11 @@ impl Exchange for Bitstamp {
 
             info!(exchange = "bitstamp", url = BITSTAMP_WS_URL, "connecting");
 
-            match connect_async(BITSTAMP_WS_URL).await {
+            match connect_async_tls_with_config(BITSTAMP_WS_URL, Some(ws_config), true, None).await
+            {
                 Ok((ws_stream, _)) => {
                     info!(exchange = "bitstamp", "connected");
+                    self.metrics.bitstamp_connected.store(true, Relaxed);
                     backoff_ms = 1000;
 
                     let (mut write, mut read) = ws_stream.split();
@@ -69,7 +78,9 @@ impl Exchange for Bitstamp {
                     });
 
                     if let Err(e) = write.send(Message::Text(subscribe.to_string())).await {
+                        self.metrics.bitstamp_errors.fetch_add(1, Relaxed);
                         error!(exchange = "bitstamp", error = %e, "subscribe failed");
+                        self.metrics.bitstamp_connected.store(false, Relaxed);
                         continue;
                     }
 
@@ -79,6 +90,7 @@ impl Exchange for Bitstamp {
                         tokio::select! {
                             _ = cancel.cancelled() => {
                                 info!(exchange = "bitstamp", "shutting down");
+                                self.metrics.bitstamp_connected.store(false, Relaxed);
                                 return Ok(());
                             }
                             msg = read.next() => {
@@ -90,10 +102,12 @@ impl Exchange for Bitstamp {
                                                     "data" => {
                                                         match serde_json::from_value::<BookData>(bts_msg.data) {
                                                             Ok(book_data) => {
+                                                                self.metrics.bitstamp_msgs.fetch_add(1, Relaxed);
                                                                 let book = parse_book(book_data);
                                                                 let _ = sender.send(book);
                                                             }
                                                             Err(e) => {
+                                                                self.metrics.bitstamp_errors.fetch_add(1, Relaxed);
                                                                 warn!(exchange = "bitstamp", error = %e, "parse data error");
                                                             }
                                                         }
@@ -102,6 +116,7 @@ impl Exchange for Bitstamp {
                                                         info!(exchange = "bitstamp", "subscription confirmed");
                                                     }
                                                     "bts:error" => {
+                                                        self.metrics.bitstamp_errors.fetch_add(1, Relaxed);
                                                         error!(exchange = "bitstamp", data = ?bts_msg.data, "server error");
                                                         break;
                                                     }
@@ -111,12 +126,14 @@ impl Exchange for Bitstamp {
                                                 }
                                             }
                                             Err(e) => {
+                                                self.metrics.bitstamp_errors.fetch_add(1, Relaxed);
                                                 warn!(exchange = "bitstamp", error = %e, "parse message error");
                                             }
                                         }
                                     }
                                     Some(Ok(_)) => {} // Ping/Pong/Binary — ignore.
                                     Some(Err(e)) => {
+                                        self.metrics.bitstamp_errors.fetch_add(1, Relaxed);
                                         warn!(exchange = "bitstamp", error = %e, "ws error");
                                         break;
                                     }
@@ -128,8 +145,11 @@ impl Exchange for Bitstamp {
                             }
                         }
                     }
+
+                    self.metrics.bitstamp_connected.store(false, Relaxed);
                 }
                 Err(e) => {
+                    self.metrics.bitstamp_errors.fetch_add(1, Relaxed);
                     error!(exchange = "bitstamp", error = %e, "connection failed");
                 }
             }
