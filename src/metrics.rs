@@ -125,6 +125,7 @@ pub struct Metrics {
     pub binance_decode: PromHistogram,
     pub bitstamp_decode: PromHistogram,
     pub merge_latency: PromHistogram,
+    pub e2e_latency: PromHistogram,
 }
 
 impl Default for Metrics {
@@ -141,6 +142,7 @@ impl Default for Metrics {
             binance_decode: PromHistogram::new(),
             bitstamp_decode: PromHistogram::new(),
             merge_latency: PromHistogram::new(),
+            e2e_latency: PromHistogram::new(),
         }
     }
 }
@@ -184,6 +186,10 @@ impl Metrics {
         writeln!(out, "# HELP orderbook_merge_duration_seconds Order book merge latency").unwrap();
         writeln!(out, "# TYPE orderbook_merge_duration_seconds histogram").unwrap();
         self.merge_latency.render("orderbook_merge_duration_seconds", "", &mut out);
+
+        writeln!(out, "# HELP orderbook_e2e_duration_seconds End-to-end latency: WS receive to merged summary published").unwrap();
+        writeln!(out, "# TYPE orderbook_e2e_duration_seconds histogram").unwrap();
+        self.e2e_latency.render("orderbook_e2e_duration_seconds", "", &mut out);
 
         out
     }

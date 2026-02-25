@@ -75,7 +75,7 @@ impl Exchange for Binance {
                                             let t0 = Instant::now();
                                             match serde_json::from_str::<DepthSnapshot>(&text) {
                                                 Ok(snapshot) => {
-                                                    let book = parse_snapshot(snapshot);
+                                                    let book = parse_snapshot(snapshot, t0);
                                                     self.metrics.binance_decode.record(t0.elapsed());
                                                     self.metrics.binance_msgs.fetch_add(1, Relaxed);
                                                     let _ = sender.send(book);
@@ -126,7 +126,7 @@ impl Exchange for Binance {
     }
 }
 
-fn parse_snapshot(snapshot: DepthSnapshot) -> OrderBook {
+fn parse_snapshot(snapshot: DepthSnapshot, received_at: std::time::Instant) -> OrderBook {
     let bids = snapshot
         .bids
         .iter()
@@ -155,5 +155,6 @@ fn parse_snapshot(snapshot: DepthSnapshot) -> OrderBook {
         exchange: "binance",
         bids,
         asks,
+        received_at,
     }
 }

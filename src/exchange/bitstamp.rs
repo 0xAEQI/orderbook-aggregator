@@ -104,7 +104,7 @@ impl Exchange for Bitstamp {
                                                         let t0 = Instant::now();
                                                         match serde_json::from_value::<BookData>(bts_msg.data) {
                                                             Ok(book_data) => {
-                                                                let book = parse_book(book_data);
+                                                                let book = parse_book(book_data, t0);
                                                                 self.metrics.bitstamp_decode.record(t0.elapsed());
                                                                 self.metrics.bitstamp_msgs.fetch_add(1, Relaxed);
                                                                 let _ = sender.send(book);
@@ -174,7 +174,7 @@ impl Exchange for Bitstamp {
     }
 }
 
-fn parse_book(data: BookData) -> OrderBook {
+fn parse_book(data: BookData, received_at: std::time::Instant) -> OrderBook {
     let bids = data
         .bids
         .iter()
@@ -203,5 +203,6 @@ fn parse_book(data: BookData) -> OrderBook {
         exchange: "bitstamp",
         bids,
         asks,
+        received_at,
     }
 }

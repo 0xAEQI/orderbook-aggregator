@@ -1,5 +1,7 @@
 //! Core domain types for order book data.
 
+use std::time::Instant;
+
 /// A single price level from an exchange.
 #[derive(Debug, Clone)]
 pub struct Level {
@@ -16,6 +18,8 @@ pub struct OrderBook {
     pub bids: Vec<Level>,
     /// Asks sorted lowest price first.
     pub asks: Vec<Level>,
+    /// Timestamp when the WebSocket frame was received (for e2e latency).
+    pub received_at: Instant,
 }
 
 /// Merged summary ready for gRPC broadcast.

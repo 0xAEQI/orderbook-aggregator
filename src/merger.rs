@@ -46,6 +46,7 @@ pub async fn run(
             result = rx.recv() => {
                 match result {
                     Ok(book) => {
+                        let received_at = book.received_at;
                         books.insert(book.exchange, book);
                         let t0 = Instant::now();
                         let summary = merge(&books, &mut bid_buf, &mut ask_buf);
@@ -58,6 +59,8 @@ pub async fn run(
                             "merged"
                         );
                         let _ = summary_tx.send(summary);
+                        // e2e: WS frame received → merged summary published.
+                        metrics.e2e_latency.record(received_at.elapsed());
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         debug!(skipped = n, "merger lagged — catching up");
@@ -146,6 +149,7 @@ mod tests {
             exchange,
             bids,
             asks,
+            received_at: Instant::now(),
         }
     }
 
