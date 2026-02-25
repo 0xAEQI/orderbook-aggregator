@@ -3,6 +3,10 @@
 //! Connects to the Bitstamp WebSocket API and subscribes to the `order_book`
 //! channel for the configured pair. Bitstamp sends full order book snapshots
 //! on each update (top 100 levels).
+//!
+//! Two-phase zero-copy parse: the outer envelope uses `&RawValue` to skip
+//! materializing the `data` field as `serde_json::Value` (dozens of allocs).
+//! The inner book data borrows `[&str; 2]` from the original WS frame buffer.
 
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
@@ -11,6 +15,7 @@ use std::time::Instant;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
+use serde_json::value::RawValue;
 use tokio::sync::broadcast;
 use tokio_tungstenite::connect_async_tls_with_config;
 use tokio_tungstenite::tungstenite::Message;
@@ -29,17 +34,22 @@ pub struct Bitstamp {
     pub metrics: Arc<ExchangeMetrics>,
 }
 
-#[derive(Debug, Deserialize)]
-struct BitstampMessage {
-    event: String,
-    #[serde(default)]
-    data: serde_json::Value,
+/// Outer envelope — `data` stays as raw JSON bytes, not materialized into Value.
+#[derive(Deserialize)]
+struct Envelope<'a> {
+    #[serde(borrow)]
+    event: &'a str,
+    #[serde(borrow)]
+    data: &'a RawValue,
 }
 
-#[derive(Debug, Deserialize)]
-struct BookData {
-    bids: Vec<[String; 2]>,
-    asks: Vec<[String; 2]>,
+/// Inner book data — borrows price/amount strings from the JSON buffer.
+#[derive(Deserialize)]
+struct BookData<'a> {
+    #[serde(borrow)]
+    bids: Vec<[&'a str; 2]>,
+    #[serde(borrow)]
+    asks: Vec<[&'a str; 2]>,
 }
 
 impl Exchange for Bitstamp {
@@ -97,14 +107,14 @@ impl Exchange for Bitstamp {
                             msg = read.next() => {
                                 match msg {
                                     Some(Ok(Message::Text(text))) => {
-                                        match serde_json::from_str::<BitstampMessage>(&text) {
-                                            Ok(bts_msg) => {
-                                                match bts_msg.event.as_str() {
+                                        match serde_json::from_str::<Envelope<'_>>(&text) {
+                                            Ok(envelope) => {
+                                                match envelope.event {
                                                     "data" => {
                                                         let t0 = Instant::now();
-                                                        match serde_json::from_value::<BookData>(bts_msg.data) {
+                                                        match serde_json::from_str::<BookData<'_>>(envelope.data.get()) {
                                                             Ok(book_data) => {
-                                                                let book = parse_book(book_data, t0);
+                                                                let book = parse_book(&book_data, t0);
                                                                 self.metrics.decode_latency.record(t0.elapsed());
                                                                 self.metrics.messages.fetch_add(1, Relaxed);
                                                                 let _ = sender.send(book);
@@ -120,17 +130,15 @@ impl Exchange for Bitstamp {
                                                     }
                                                     "bts:error" => {
                                                         self.metrics.errors.fetch_add(1, Relaxed);
-                                                        error!(exchange = "bitstamp", data = ?bts_msg.data, "server error");
+                                                        error!(exchange = "bitstamp", raw = %envelope.data, "server error");
                                                         break;
                                                     }
-                                                    _ => {
-                                                        // Ignore heartbeats, request_reconnect, etc.
-                                                    }
+                                                    _ => {}
                                                 }
                                             }
                                             Err(e) => {
                                                 self.metrics.errors.fetch_add(1, Relaxed);
-                                                warn!(exchange = "bitstamp", error = %e, "parse message error");
+                                                warn!(exchange = "bitstamp", error = %e, "parse envelope error");
                                             }
                                         }
                                     }
@@ -174,35 +182,22 @@ impl Exchange for Bitstamp {
     }
 }
 
-fn parse_book(data: BookData, received_at: std::time::Instant) -> OrderBook {
-    let bids = data
-        .bids
-        .iter()
-        .filter_map(|[price, amount]| {
-            Some(Level {
-                exchange: "bitstamp",
-                price: price.parse().ok()?,
-                amount: amount.parse().ok()?,
-            })
-        })
-        .collect();
+/// Parse borrowed string slices directly into f64 — no intermediate String allocation.
+fn parse_levels(exchange: &'static str, raw: &[[&str; 2]]) -> Vec<Level> {
+    let mut levels = Vec::with_capacity(raw.len());
+    for &[price, amount] in raw {
+        if let (Ok(p), Ok(a)) = (price.parse(), amount.parse()) {
+            levels.push(Level { exchange, price: p, amount: a });
+        }
+    }
+    levels
+}
 
-    let asks = data
-        .asks
-        .iter()
-        .filter_map(|[price, amount]| {
-            Some(Level {
-                exchange: "bitstamp",
-                price: price.parse().ok()?,
-                amount: amount.parse().ok()?,
-            })
-        })
-        .collect();
-
+fn parse_book(data: &BookData<'_>, received_at: Instant) -> OrderBook {
     OrderBook {
         exchange: "bitstamp",
-        bids,
-        asks,
+        bids: parse_levels("bitstamp", &data.bids),
+        asks: parse_levels("bitstamp", &data.asks),
         received_at,
     }
 }
