@@ -4,14 +4,14 @@
 //! maintains the latest book per exchange, and publishes merged [`Summary`]
 //! snapshots via a `tokio::watch` channel.
 //!
-//! Uses a k-way merge of pre-sorted exchange books: O(TOP_N × k) comparisons
-//! instead of O(n log n) concat+sort. For 2 exchanges × 20 levels → top 10,
+//! Uses a k-way merge of pre-sorted exchange books: `O(TOP_N × k)` comparisons
+//! instead of `O(n log n)` concat+sort. For 2 exchanges × 20 levels → top 10,
 //! that's ~20 comparisons vs ~212.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
+use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
 
 use tokio::sync::{broadcast, watch};
@@ -103,13 +103,9 @@ fn merge_top_n(
                 });
             }
         }
-        match best {
-            Some(i) => {
-                result.push(slices[i][cursors[i]].clone());
-                cursors[i] += 1;
-            }
-            None => break,
-        }
+        let Some(i) = best else { break };
+        result.push(slices[i][cursors[i]].clone());
+        cursors[i] += 1;
     }
 
     result
@@ -131,14 +127,26 @@ fn merge(books: &HashMap<&'static str, OrderBook>) -> Summary {
     }
 
     // Bids: highest price first, then largest amount as tiebreaker.
-    let bids = merge_top_n(&bid_slices[..k], |a, b| {
-        b.price.total_cmp(&a.price).then(b.amount.total_cmp(&a.amount))
-    }, TOP_N);
+    let bids = merge_top_n(
+        &bid_slices[..k],
+        |a, b| {
+            b.price
+                .total_cmp(&a.price)
+                .then(b.amount.total_cmp(&a.amount))
+        },
+        TOP_N,
+    );
 
     // Asks: lowest price first, then largest amount as tiebreaker.
-    let asks = merge_top_n(&ask_slices[..k], |a, b| {
-        a.price.total_cmp(&b.price).then(b.amount.total_cmp(&a.amount))
-    }, TOP_N);
+    let asks = merge_top_n(
+        &ask_slices[..k],
+        |a, b| {
+            a.price
+                .total_cmp(&b.price)
+                .then(b.amount.total_cmp(&a.amount))
+        },
+        TOP_N,
+    );
 
     let spread = match (asks.first(), bids.first()) {
         (Some(ask), Some(bid)) => ask.price - bid.price,
@@ -149,6 +157,7 @@ fn merge(books: &HashMap<&'static str, OrderBook>) -> Summary {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // Exact f64 literals from test inputs — no arithmetic rounding.
 mod tests {
     use super::*;
 
@@ -186,14 +195,8 @@ mod tests {
             "bitstamp",
             book(
                 "bitstamp",
-                vec![
-                    level("bitstamp", 100.5, 2.0),
-                    level("bitstamp", 99.5, 1.0),
-                ],
-                vec![
-                    level("bitstamp", 100.8, 3.0),
-                    level("bitstamp", 101.5, 1.0),
-                ],
+                vec![level("bitstamp", 100.5, 2.0), level("bitstamp", 99.5, 1.0)],
+                vec![level("bitstamp", 100.8, 3.0), level("bitstamp", 101.5, 1.0)],
             ),
         );
 
@@ -220,10 +223,10 @@ mod tests {
         let mut books = HashMap::new();
 
         let many_bids: Vec<Level> = (0..15)
-            .map(|i| level("binance", 100.0 - i as f64, 1.0))
+            .map(|i| level("binance", 100.0 - f64::from(i), 1.0))
             .collect();
         let many_asks: Vec<Level> = (0..15)
-            .map(|i| level("binance", 101.0 + i as f64, 1.0))
+            .map(|i| level("binance", 101.0 + f64::from(i), 1.0))
             .collect();
 
         books.insert("binance", book("binance", many_bids, many_asks));

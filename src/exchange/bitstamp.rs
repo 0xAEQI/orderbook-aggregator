@@ -9,8 +9,8 @@
 //! `bids`/`asks` via `#[serde(default)]` — no separate envelope parse needed
 //! since simd-json's vectorized stage 1 scans the whole buffer regardless.
 
-use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
+use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
 
 use futures_util::{SinkExt, StreamExt};
@@ -24,7 +24,7 @@ use tracing::{error, info, warn};
 
 use crate::error::Result;
 use crate::metrics::ExchangeMetrics;
-use crate::types::{Level, OrderBook};
+use crate::types::OrderBook;
 
 use super::Exchange;
 
@@ -71,9 +71,14 @@ impl Exchange for Bitstamp {
 
             info!(exchange = "bitstamp", url = BITSTAMP_WS_URL, "connecting");
 
-            match connect_async_tls_with_config(BITSTAMP_WS_URL, Some(ws_config), true, None).await
-            {
-                Ok((ws_stream, _)) => {
+            let connect_fut =
+                connect_async_tls_with_config(BITSTAMP_WS_URL, Some(ws_config), true, None);
+            match tokio::time::timeout(std::time::Duration::from_secs(10), connect_fut).await {
+                Err(_) => {
+                    self.metrics.errors.fetch_add(1, Relaxed);
+                    error!(exchange = "bitstamp", "connection timed out");
+                }
+                Ok(Ok((ws_stream, _))) => {
                     info!(exchange = "bitstamp", "connected");
                     self.metrics.connected.store(true, Relaxed);
                     backoff_ms = 1000;
@@ -107,13 +112,17 @@ impl Exchange for Bitstamp {
                             msg = read.next() => {
                                 match msg {
                                     Some(Ok(Message::Text(mut text))) => {
-                                        // SAFETY: text is a heap-allocated String from a WS
-                                        // text frame — valid UTF-8 and properly aligned.
-                                        match unsafe { simd_json::from_str::<BitstampMessage<'_>>(&mut text) } {
+                                        let t0 = Instant::now();
+                                        // SAFETY: `simd_json::from_str` requires `&mut str` for in-place
+                                        // SIMD tokenization. `text` is a heap-allocated String from
+                                        // a WS text frame — valid UTF-8, properly aligned, and not
+                                        // accessed after this call (simd-json may mutate the buffer).
+                                        #[allow(unsafe_code)]
+                                        let parsed = unsafe { simd_json::from_str::<BitstampMessage<'_>>(&mut text) };
+                                        match parsed {
                                             Ok(bts_msg) => {
                                                 match bts_msg.event {
                                                     "data" => {
-                                                        let t0 = Instant::now();
                                                         let book = parse_book(&bts_msg.data, t0);
                                                         self.metrics.decode_latency.record(t0.elapsed());
                                                         self.metrics.messages.fetch_add(1, Relaxed);
@@ -153,7 +162,7 @@ impl Exchange for Bitstamp {
 
                     self.metrics.connected.store(false, Relaxed);
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     self.metrics.errors.fetch_add(1, Relaxed);
                     error!(exchange = "bitstamp", error = %e, "connection failed");
                 }
@@ -176,25 +185,12 @@ impl Exchange for Bitstamp {
     }
 }
 
-/// Parse borrowed string slices directly into f64 — no intermediate String allocation.
-/// Uses `fast-float` for SIMD-accelerated float parsing (~2-3x faster than `str::parse`).
-#[inline]
-fn parse_levels(exchange: &'static str, raw: &[[&str; 2]]) -> Vec<Level> {
-    let mut levels = Vec::with_capacity(raw.len());
-    for &[price, amount] in raw {
-        if let (Ok(p), Ok(a)) = (fast_float::parse(price), fast_float::parse(amount)) {
-            levels.push(Level { exchange, price: p, amount: a });
-        }
-    }
-    levels
-}
-
 #[inline]
 fn parse_book(data: &BookFields<'_>, received_at: Instant) -> OrderBook {
     OrderBook {
         exchange: "bitstamp",
-        bids: parse_levels("bitstamp", &data.bids),
-        asks: parse_levels("bitstamp", &data.asks),
+        bids: super::parse_levels("bitstamp", &data.bids),
+        asks: super::parse_levels("bitstamp", &data.asks),
         received_at,
     }
 }

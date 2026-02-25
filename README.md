@@ -146,6 +146,10 @@ The Prometheus histogram stores per-bucket (non-cumulative) counts. Each `record
 
 ## Design Decisions
 
+### Floating-Point Prices
+
+Prices use `f64` to match the gRPC proto's `double` type. For a production system handling order matching or PnL accounting, a fixed-point or decimal representation would be preferred to avoid IEEE 754 rounding artifacts — but for aggregation and display of best-of-book levels, `f64`'s 15-16 significant digits exceed the precision of any crypto exchange.
+
 ### Channel Architecture
 
 - **`tokio::broadcast`** (exchange → merger): Multiple exchanges fan into a single merger. Handles backpressure by dropping old messages — stale order book snapshots are worthless.

@@ -5,10 +5,10 @@
 //!
 //! Uses simd-json (AVX2/SSE4.2 vectorized) for parsing + `#[serde(borrow)]`
 //! to borrow `&str` directly from the WS frame buffer. Combined: zero heap
-//! allocations and ~3-5x faster tokenization than serde_json.
+//! allocations and ~3-5x faster tokenization than `serde_json`.
 
-use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
+use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
 
 use futures_util::StreamExt;
@@ -20,7 +20,7 @@ use tracing::{error, info, warn};
 
 use crate::error::Result;
 use crate::metrics::ExchangeMetrics;
-use crate::types::{Level, OrderBook};
+use crate::types::OrderBook;
 
 use super::Exchange;
 
@@ -60,8 +60,13 @@ impl Exchange for Binance {
 
             info!(exchange = "binance", %url, "connecting");
 
-            match connect_async_tls_with_config(&url, Some(ws_config), true, None).await {
-                Ok((ws_stream, _)) => {
+            let connect_fut = connect_async_tls_with_config(&url, Some(ws_config), true, None);
+            match tokio::time::timeout(std::time::Duration::from_secs(10), connect_fut).await {
+                Err(_) => {
+                    self.metrics.errors.fetch_add(1, Relaxed);
+                    error!(exchange = "binance", "connection timed out");
+                }
+                Ok(Ok((ws_stream, _))) => {
                     info!(exchange = "binance", "connected");
                     self.metrics.connected.store(true, Relaxed);
                     backoff_ms = 1000;
@@ -80,9 +85,13 @@ impl Exchange for Binance {
                                     Some(Ok(msg)) => {
                                         if let tokio_tungstenite::tungstenite::Message::Text(mut text) = msg {
                                             let t0 = Instant::now();
-                                            // SAFETY: text is a heap-allocated String from a WS
-                                            // text frame — valid UTF-8 and properly aligned.
-                                            match unsafe { simd_json::from_str::<DepthSnapshot<'_>>(&mut text) } {
+                                            // SAFETY: `simd_json::from_str` requires `&mut str` for in-place
+                                            // SIMD tokenization. `text` is a heap-allocated String from
+                                            // a WS text frame — valid UTF-8, properly aligned, and not
+                                            // accessed after this call (simd-json may mutate the buffer).
+                                            #[allow(unsafe_code)]
+                                            let parsed = unsafe { simd_json::from_str::<DepthSnapshot<'_>>(&mut text) };
+                                            match parsed {
                                                 Ok(snapshot) => {
                                                     let book = parse_snapshot(&snapshot, t0);
                                                     self.metrics.decode_latency.record(t0.elapsed());
@@ -112,7 +121,7 @@ impl Exchange for Binance {
 
                     self.metrics.connected.store(false, Relaxed);
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     self.metrics.errors.fetch_add(1, Relaxed);
                     error!(exchange = "binance", error = %e, "connection failed");
                 }
@@ -135,25 +144,12 @@ impl Exchange for Binance {
     }
 }
 
-/// Parse borrowed string slices directly into f64 — no intermediate String allocation.
-/// Uses `fast-float` for SIMD-accelerated float parsing (~2-3x faster than `str::parse`).
-#[inline]
-fn parse_levels(exchange: &'static str, raw: &[[&str; 2]]) -> Vec<Level> {
-    let mut levels = Vec::with_capacity(raw.len());
-    for &[price, amount] in raw {
-        if let (Ok(p), Ok(a)) = (fast_float::parse(price), fast_float::parse(amount)) {
-            levels.push(Level { exchange, price: p, amount: a });
-        }
-    }
-    levels
-}
-
 #[inline]
 fn parse_snapshot(snapshot: &DepthSnapshot<'_>, received_at: Instant) -> OrderBook {
     OrderBook {
         exchange: "binance",
-        bids: parse_levels("binance", &snapshot.bids),
-        asks: parse_levels("binance", &snapshot.asks),
+        bids: super::parse_levels("binance", &snapshot.bids),
+        asks: super::parse_levels("binance", &snapshot.asks),
         received_at,
     }
 }

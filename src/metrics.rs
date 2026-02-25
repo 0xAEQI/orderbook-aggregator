@@ -8,14 +8,14 @@
 //! matching the resolution needed for HFT latency profiling.
 
 use std::fmt::Write;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
+use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::get;
-use axum::Router;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -28,24 +28,24 @@ const NUM_BUCKETS: usize = 12;
 /// Upper bounds in nanoseconds + Prometheus `le` label strings.
 /// 1-2-5 logarithmic progression from 1μs to 10ms.
 const BUCKETS: [(u64, &str); NUM_BUCKETS] = [
-    (1_000, "0.000001"),       // 1μs
-    (2_000, "0.000002"),       // 2μs
-    (5_000, "0.000005"),       // 5μs
-    (10_000, "0.00001"),       // 10μs
-    (25_000, "0.000025"),      // 25μs
-    (50_000, "0.00005"),       // 50μs
-    (100_000, "0.0001"),       // 100μs
-    (250_000, "0.00025"),      // 250μs
-    (500_000, "0.0005"),       // 500μs
-    (1_000_000, "0.001"),      // 1ms
-    (5_000_000, "0.005"),      // 5ms
-    (10_000_000, "0.01"),      // 10ms
+    (1_000, "0.000001"),  // 1μs
+    (2_000, "0.000002"),  // 2μs
+    (5_000, "0.000005"),  // 5μs
+    (10_000, "0.00001"),  // 10μs
+    (25_000, "0.000025"), // 25μs
+    (50_000, "0.00005"),  // 50μs
+    (100_000, "0.0001"),  // 100μs
+    (250_000, "0.00025"), // 250μs
+    (500_000, "0.0005"),  // 500μs
+    (1_000_000, "0.001"), // 1ms
+    (5_000_000, "0.005"), // 5ms
+    (10_000_000, "0.01"), // 10ms
 ];
 
 pub struct PromHistogram {
     /// Per-bucket (non-cumulative) counters. Index i counts observations where
     /// BUCKETS[i-1] < value <= BUCKETS[i]. Last slot is the +Inf overflow bucket.
-    /// This gives O(1) record (single fetch_add) vs O(k) for cumulative buckets.
+    /// This gives O(1) record (single `fetch_add`) vs O(k) for cumulative buckets.
     buckets: [AtomicU64; NUM_BUCKETS + 1],
     /// Sum of all observed values in nanoseconds.
     sum_ns: AtomicU64,
@@ -69,7 +69,7 @@ impl PromHistogram {
     /// Cumulative sums are computed lazily on the cold `/metrics` render path.
     #[inline]
     pub fn record(&self, duration: Duration) {
-        let nanos = duration.as_nanos() as u64;
+        let nanos = u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
 
         let mut idx = NUM_BUCKETS; // overflow slot
         for (i, &(bound_ns, _)) in BUCKETS.iter().enumerate() {
@@ -87,7 +87,7 @@ impl PromHistogram {
     /// Render as Prometheus histogram lines.
     ///
     /// Computes cumulative sums from per-bucket counts — O(k) work on the cold
-    /// scrape path (~every 5-15s) instead of on every hot-path record().
+    /// scrape path (~every 5-15s) instead of on every hot-path `record()`.
     fn render(&self, name: &str, labels: &str, out: &mut String) {
         let mut cumulative = 0u64;
         for (i, &(_, le)) in BUCKETS.iter().enumerate() {
@@ -194,49 +194,99 @@ impl Metrics {
         let mut out = String::with_capacity(4096);
 
         // -- Per-exchange counters (dynamic) --
-        writeln!(out, "# HELP orderbook_messages_total WebSocket messages received").unwrap();
+        writeln!(
+            out,
+            "# HELP orderbook_messages_total WebSocket messages received"
+        )
+        .unwrap();
         writeln!(out, "# TYPE orderbook_messages_total counter").unwrap();
         for ex in &self.exchanges {
-            writeln!(out, "orderbook_messages_total{{exchange=\"{}\"}} {}", ex.name, ex.messages.load(Relaxed)).unwrap();
+            writeln!(
+                out,
+                "orderbook_messages_total{{exchange=\"{}\"}} {}",
+                ex.name,
+                ex.messages.load(Relaxed)
+            )
+            .unwrap();
         }
 
         writeln!(out, "# HELP orderbook_errors_total Parse/connection errors").unwrap();
         writeln!(out, "# TYPE orderbook_errors_total counter").unwrap();
         for ex in &self.exchanges {
-            writeln!(out, "orderbook_errors_total{{exchange=\"{}\"}} {}", ex.name, ex.errors.load(Relaxed)).unwrap();
+            writeln!(
+                out,
+                "orderbook_errors_total{{exchange=\"{}\"}} {}",
+                ex.name,
+                ex.errors.load(Relaxed)
+            )
+            .unwrap();
         }
 
-        writeln!(out, "# HELP orderbook_merges_total Order book merge operations").unwrap();
+        writeln!(
+            out,
+            "# HELP orderbook_merges_total Order book merge operations"
+        )
+        .unwrap();
         writeln!(out, "# TYPE orderbook_merges_total counter").unwrap();
         writeln!(out, "orderbook_merges_total {}", self.merges.load(Relaxed)).unwrap();
 
         // -- Per-exchange gauges (dynamic) --
-        writeln!(out, "# HELP orderbook_exchange_up Exchange connection status (1=connected)").unwrap();
+        writeln!(
+            out,
+            "# HELP orderbook_exchange_up Exchange connection status (1=connected)"
+        )
+        .unwrap();
         writeln!(out, "# TYPE orderbook_exchange_up gauge").unwrap();
         for ex in &self.exchanges {
-            writeln!(out, "orderbook_exchange_up{{exchange=\"{}\"}} {}", ex.name, ex.connected.load(Relaxed) as u8).unwrap();
+            writeln!(
+                out,
+                "orderbook_exchange_up{{exchange=\"{}\"}} {}",
+                ex.name,
+                u8::from(ex.connected.load(Relaxed))
+            )
+            .unwrap();
         }
 
-        writeln!(out, "# HELP orderbook_uptime_seconds Seconds since process start").unwrap();
+        writeln!(
+            out,
+            "# HELP orderbook_uptime_seconds Seconds since process start"
+        )
+        .unwrap();
         writeln!(out, "# TYPE orderbook_uptime_seconds gauge").unwrap();
-        writeln!(out, "orderbook_uptime_seconds {}", self.start_time.elapsed().as_secs()).unwrap();
+        writeln!(
+            out,
+            "orderbook_uptime_seconds {}",
+            self.start_time.elapsed().as_secs()
+        )
+        .unwrap();
 
         // -- Per-exchange histograms (dynamic) --
-        writeln!(out, "# HELP orderbook_decode_duration_seconds WebSocket message decode latency").unwrap();
+        writeln!(
+            out,
+            "# HELP orderbook_decode_duration_seconds WebSocket message decode latency"
+        )
+        .unwrap();
         writeln!(out, "# TYPE orderbook_decode_duration_seconds histogram").unwrap();
         for ex in &self.exchanges {
             let labels = format!("exchange=\"{}\"", ex.name);
-            ex.decode_latency.render("orderbook_decode_duration_seconds", &labels, &mut out);
+            ex.decode_latency
+                .render("orderbook_decode_duration_seconds", &labels, &mut out);
         }
 
         // -- Global histograms --
-        writeln!(out, "# HELP orderbook_merge_duration_seconds Order book merge latency").unwrap();
+        writeln!(
+            out,
+            "# HELP orderbook_merge_duration_seconds Order book merge latency"
+        )
+        .unwrap();
         writeln!(out, "# TYPE orderbook_merge_duration_seconds histogram").unwrap();
-        self.merge_latency.render("orderbook_merge_duration_seconds", "", &mut out);
+        self.merge_latency
+            .render("orderbook_merge_duration_seconds", "", &mut out);
 
         writeln!(out, "# HELP orderbook_e2e_duration_seconds End-to-end latency: WS receive to merged summary published").unwrap();
         writeln!(out, "# TYPE orderbook_e2e_duration_seconds histogram").unwrap();
-        self.e2e_latency.render("orderbook_e2e_duration_seconds", "", &mut out);
+        self.e2e_latency
+            .render("orderbook_e2e_duration_seconds", "", &mut out);
 
         out
     }
@@ -266,7 +316,11 @@ pub async fn serve_http(port: u16, metrics: Arc<Metrics>, cancel: CancellationTo
 }
 
 async fn health(State(m): State<Arc<Metrics>>) -> (StatusCode, &'static str) {
-    let connected = m.exchanges.iter().filter(|e| e.connected.load(Relaxed)).count();
+    let connected = m
+        .exchanges
+        .iter()
+        .filter(|e| e.connected.load(Relaxed))
+        .count();
     let total = m.exchanges.len();
 
     if connected == total {

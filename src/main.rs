@@ -20,11 +20,9 @@ use tonic::transport::Server;
 use tracing::info;
 
 use config::Config;
-use exchange::{binance::Binance, bitstamp::Bitstamp, Exchange};
+use exchange::{Exchange, binance::Binance, bitstamp::Bitstamp};
 use metrics::Metrics;
-use server::{
-    proto::orderbook_aggregator_server::OrderbookAggregatorServer, OrderbookService,
-};
+use server::{OrderbookService, proto::orderbook_aggregator_server::OrderbookAggregatorServer};
 use types::Summary;
 
 #[tokio::main]

@@ -1,7 +1,7 @@
 [package]
 name = "orderbook-aggregator"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Real-time order book aggregator: merges Binance + Bitstamp depth and streams top-10 levels via gRPC"
 
 [[bin]]
@@ -27,14 +27,29 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"
-rand = "0.8"
+rand = "0.9"
 axum = "0.7"
 fast-float = "0.2"
 
 [build-dependencies]
 tonic-build = "0.12"
 
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Acceptable for this codebase:
+missing_errors_doc    = "allow" # internal crate, not a public API
+missing_panics_doc    = "allow"
+module_name_repetitions = "allow"
+cast_possible_truncation = "allow" # Duration::as_nanos() → u64: max ~584 years
+cast_precision_loss    = "allow" # nanos u64 → f64: acceptable for display
+ignored_unit_patterns  = "allow" # `_ = cancel.cancelled()` is idiomatic tokio::select!
+too_many_lines         = "allow" # exchange adapters are inherently long (reconnect loops)
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
 strip = true
+panic = "abort"

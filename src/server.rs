@@ -3,11 +3,12 @@
 use std::pin::Pin;
 
 use tokio::sync::watch;
-use tokio_stream::{wrappers::WatchStream, Stream, StreamExt};
+use tokio_stream::{Stream, StreamExt, wrappers::WatchStream};
 use tonic::{Request, Response, Status};
 
 use crate::types::Summary;
 
+#[allow(clippy::pedantic)] // Generated code.
 pub mod proto {
     tonic::include_proto!("orderbook");
 }

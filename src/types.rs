@@ -23,21 +23,11 @@ pub struct OrderBook {
 }
 
 /// Merged summary ready for gRPC broadcast.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Summary {
     pub spread: f64,
     /// Top 10 bids, highest price first.
     pub bids: Vec<Level>,
     /// Top 10 asks, lowest price first.
     pub asks: Vec<Level>,
-}
-
-impl Default for Summary {
-    fn default() -> Self {
-        Self {
-            spread: 0.0,
-            bids: Vec::new(),
-            asks: Vec::new(),
-        }
-    }
 }

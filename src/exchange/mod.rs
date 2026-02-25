@@ -13,7 +13,7 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::Result;
-use crate::types::OrderBook;
+use crate::types::{Level, OrderBook};
 
 /// Trait implemented by each exchange adapter.
 pub trait Exchange: Send + Sync + 'static {
@@ -35,4 +35,30 @@ pub fn ws_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig 
         write_buffer_size: 0, // Flush every frame immediately.
         ..Default::default()
     }
+}
+
+/// Parse borrowed string slices directly into f64 — no intermediate String allocation.
+/// Uses `fast-float` for SIMD-accelerated float parsing (~2-3x faster than `str::parse`).
+#[inline]
+pub fn parse_levels(exchange: &'static str, raw: &[[&str; 2]]) -> Vec<Level> {
+    let mut levels = Vec::with_capacity(raw.len());
+    for &[price, amount] in raw {
+        match (fast_float::parse(price), fast_float::parse(amount)) {
+            (Ok(p), Ok(a)) => levels.push(Level {
+                exchange,
+                price: p,
+                amount: a,
+            }),
+            (Err(e), _) | (_, Err(e)) => {
+                tracing::warn!(
+                    exchange,
+                    price,
+                    amount,
+                    error = %e,
+                    "malformed price level — skipped"
+                );
+            }
+        }
+    }
+    levels
 }

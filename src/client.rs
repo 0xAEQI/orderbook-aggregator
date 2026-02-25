@@ -2,6 +2,7 @@
 
 use tonic::Request;
 
+#[allow(clippy::pedantic)] // Generated code.
 pub mod proto {
     tonic::include_proto!("orderbook");
 }
@@ -27,10 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(summary) = stream.message().await? {
         print!("\x1b[2J\x1b[H"); // Clear screen.
 
-        println!(
-            "=== Order Book Summary === spread: {:.8}\n",
-            summary.spread
-        );
+        println!("=== Order Book Summary === spread: {:.8}\n", summary.spread);
 
         println!("{:<10} {:>14} {:>14}", "EXCHANGE", "PRICE", "AMOUNT");
         println!("{}", "-".repeat(40));
