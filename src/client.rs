@@ -95,9 +95,18 @@ fn render(frame: &mut Frame, app: &App) {
         .map(|l| l.amount)
         .fold(0.0_f64, f64::max);
 
+    // ── Column header ────────────────────────────────────────────────────
+    let header = Line::from(vec![
+        Span::styled("  EXCHANGE  ", Style::new().fg(DIM).bold()),
+        Span::styled("         PRICE", Style::new().fg(DIM).bold()),
+        Span::styled("           QTY", Style::new().fg(DIM).bold()),
+        Span::styled("  DEPTH", Style::new().fg(DIM).bold()),
+    ]);
+
     // ── Ask rows (highest at top → best ask at bottom) ──────────────────
-    let mut ask_lines: Vec<Line<'_>> = Vec::with_capacity(summary.asks.len() + 1);
+    let mut ask_lines: Vec<Line<'_>> = Vec::with_capacity(summary.asks.len() + 2);
     ask_lines.push(Line::from(Span::styled("  ASKS", Style::new().fg(RED).bold())));
+    ask_lines.push(header.clone());
     // asks come sorted best-first from the server; reverse so highest is at top
     for level in summary.asks.iter().rev() {
         ask_lines.push(format_level(level, RED, max_amount));
@@ -120,7 +129,8 @@ fn render(frame: &mut Frame, app: &App) {
     ));
 
     // ── Bid rows (best bid at top → lowest at bottom) ───────────────────
-    let mut bid_lines: Vec<Line<'_>> = Vec::with_capacity(summary.bids.len() + 1);
+    let mut bid_lines: Vec<Line<'_>> = Vec::with_capacity(summary.bids.len() + 2);
+    bid_lines.push(header);
     for level in &summary.bids {
         bid_lines.push(format_level(level, GREEN, max_amount));
     }
