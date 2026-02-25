@@ -122,9 +122,9 @@ fn render(frame: &mut Frame, app: &App) {
 
     // ── Column header ────────────────────────────────────────────────────
     let header = Line::from(vec![
-        Span::styled("  EXCHANGE  ", Style::new().fg(Color::White).bold()),
-        Span::styled("         PRICE", Style::new().fg(Color::White).bold()),
-        Span::styled("          SIZE", Style::new().fg(Color::White).bold()),
+        Span::styled("  VENUE     ", Style::new().fg(Color::White).bold()),
+        Span::styled("         QUOTE", Style::new().fg(Color::White).bold()),
+        Span::styled("           QTY", Style::new().fg(Color::White).bold()),
         Span::styled("         TOTAL", Style::new().fg(Color::White).bold()),
         Span::styled("  DEPTH", Style::new().fg(Color::White).bold()),
     ]);
