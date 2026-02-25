@@ -168,6 +168,16 @@ fn parse_snapshot(snapshot: &DepthSnapshot<'_>, received_at: Instant) -> OrderBo
     }
 }
 
+/// Parse a raw Binance `depth20` JSON frame into an [`OrderBook`].
+///
+/// Wraps the internal simd-json + `fast-float` parse pipeline so benchmarks
+/// can measure decode performance without accessing private types.
+#[allow(unsafe_code)]
+pub fn parse_depth_json(json: &mut str) -> Option<OrderBook> {
+    let snapshot = unsafe { simd_json::from_str::<DepthSnapshot<'_>>(json) }.ok()?;
+    Some(parse_snapshot(&snapshot, Instant::now()))
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {

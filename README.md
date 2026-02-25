@@ -207,3 +207,19 @@ cargo test
 - **Merger**: cross-exchange merging, single-exchange degraded mode, crossed book (negative spread), truncation to top-10, empty book handling, bid and ask tiebreaking by amount, k-way merge interleave correctness
 - **Binance parser**: realistic depth20 JSON payload, unknown field tolerance
 - **Bitstamp parser**: data message parsing, non-data event handling, custom deserializer cap at 20 levels
+
+## Benchmarks
+
+Criterion micro-benchmarks for every stage of the hot path:
+
+```bash
+cargo bench
+```
+
+| Benchmark | What it measures | Typical |
+|-----------|-----------------|---------|
+| `binance_decode_20` | simd-json parse + fast-float for 20-level Binance depth snapshot | ~3μs |
+| `bitstamp_decode_20` | simd-json parse + fast-float for 20-level Bitstamp order book | ~5μs |
+| `fast_float_parse` | Eisel-Lemire float parse of a price + quantity pair | ~16ns |
+| `merge_2x20` | K-way merge of 2×20 levels into top-10 output | ~1μs |
+| `e2e_parse_merge` | Full pipeline: 2× JSON decode → merge → Summary | ~8μs |

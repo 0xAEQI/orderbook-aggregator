@@ -255,6 +255,20 @@ fn parse_book(data: &BookFields<'_>, received_at: Instant) -> OrderBook {
     }
 }
 
+/// Parse a raw Bitstamp `order_book` JSON message into an [`OrderBook`].
+///
+/// Wraps the internal simd-json + `fast-float` parse pipeline so benchmarks
+/// can measure decode performance without accessing private types.
+/// Returns `None` for non-data events (e.g. subscription confirmations).
+#[allow(unsafe_code)]
+pub fn parse_order_book_json(json: &mut str) -> Option<OrderBook> {
+    let msg = unsafe { simd_json::from_str::<BitstampMessage<'_>>(json) }.ok()?;
+    if msg.event != "data" {
+        return None;
+    }
+    Some(parse_book(&msg.data, Instant::now()))
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {

@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 description = "Real-time order book aggregator: merges Binance + Bitstamp depth and streams top-10 levels via gRPC"
 
+[lib]
+name = "orderbook_aggregator"
+path = "src/lib.rs"
+
 [[bin]]
 name = "orderbook-aggregator"
 path = "src/main.rs"
@@ -50,6 +54,13 @@ cast_possible_truncation = "allow" # Duration::as_nanos() → u64: max ~584 year
 cast_precision_loss    = "allow" # nanos u64 → f64: acceptable for display
 ignored_unit_patterns  = "allow" # `_ = cancel.cancelled()` is idiomatic tokio::select!
 too_many_lines         = "allow" # exchange adapters are inherently long (reconnect loops)
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "hot_path"
+harness = false
 
 [profile.release]
 lto = "fat"

@@ -59,7 +59,14 @@ pub struct PromHistogram {
     count: AtomicU64,
 }
 
+impl Default for PromHistogram {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PromHistogram {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             buckets: std::array::from_fn(|_| AtomicU64::new(0)),
@@ -171,6 +178,7 @@ impl Metrics {
     /// Create the metrics registry and per-exchange handles.
     ///
     /// Adding a new exchange = adding one name here. No struct changes needed.
+    #[must_use]
     pub fn register(exchange_names: &[&'static str]) -> Self {
         let exchanges = exchange_names
             .iter()

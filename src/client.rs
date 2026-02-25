@@ -90,20 +90,41 @@ fn render(frame: &mut Frame, app: &App) {
         return;
     };
 
-    // Find max amount across both sides for proportional bars.
-    let max_amount = summary
-        .asks
+    // Compute cumulative depth per side (for bars and TOTAL column).
+    let ask_cumulative: Vec<f64> = {
+        // asks displayed highest-at-top, so cumulate from worst (last) to best (first)
+        let mut cum = vec![0.0; summary.asks.len()];
+        let mut total = 0.0;
+        for i in (0..summary.asks.len()).rev() {
+            total += summary.asks[i].amount;
+            cum[i] = total;
+        }
+        // Reverse for display order (highest at top)
+        cum.into_iter().rev().collect()
+    };
+    let bid_cumulative: Vec<f64> = {
+        let mut cum = Vec::with_capacity(summary.bids.len());
+        let mut total = 0.0;
+        for level in &summary.bids {
+            total += level.amount;
+            cum.push(total);
+        }
+        cum
+    };
+
+    let max_depth = ask_cumulative
         .iter()
-        .chain(summary.bids.iter())
-        .map(|l| l.amount)
+        .chain(bid_cumulative.iter())
+        .copied()
         .fold(0.0_f64, f64::max);
 
     // ── Column header ────────────────────────────────────────────────────
     let header = Line::from(vec![
-        Span::styled("  EXCHANGE  ", Style::new().fg(DIM).bold()),
-        Span::styled("         PRICE", Style::new().fg(DIM).bold()),
-        Span::styled("          SIZE", Style::new().fg(DIM).bold()),
-        Span::styled("  DEPTH", Style::new().fg(DIM).bold()),
+        Span::styled("  EXCHANGE  ", Style::new().fg(Color::White).bold()),
+        Span::styled("         PRICE", Style::new().fg(Color::White).bold()),
+        Span::styled("          SIZE", Style::new().fg(Color::White).bold()),
+        Span::styled("         TOTAL", Style::new().fg(Color::White).bold()),
+        Span::styled("  DEPTH", Style::new().fg(Color::White).bold()),
     ]);
 
     // ── Ask rows (highest at top → best ask at bottom) ──────────────────
@@ -111,8 +132,9 @@ fn render(frame: &mut Frame, app: &App) {
     ask_lines.push(Line::from(Span::styled("  ASKS", Style::new().fg(RED).bold())));
     ask_lines.push(header.clone());
     // asks come sorted best-first from the server; reverse so highest is at top
-    for level in summary.asks.iter().rev() {
-        ask_lines.push(format_level(level, RED, max_amount));
+    for (i, level) in summary.asks.iter().rev().enumerate() {
+        let cum = ask_cumulative.get(i).copied().unwrap_or(0.0);
+        ask_lines.push(format_level(level, RED, cum, max_depth));
     }
 
     // ── Spread ──────────────────────────────────────────────────────────
@@ -124,7 +146,7 @@ fn render(frame: &mut Frame, app: &App) {
         0.0
     };
     let spread_text = format!(" Spread: {spread_abs:.8} ({spread_bps:.3}%) ");
-    let pad_total = 56_usize.saturating_sub(spread_text.len());
+    let pad_total = 70_usize.saturating_sub(spread_text.len());
     let pad = "─".repeat(pad_total / 2);
     let spread_line = Line::from(Span::styled(
         format!("  {pad}{spread_text}{pad}"),
@@ -134,8 +156,9 @@ fn render(frame: &mut Frame, app: &App) {
     // ── Bid rows (best bid at top → lowest at bottom) ───────────────────
     let mut bid_lines: Vec<Line<'_>> = Vec::with_capacity(summary.bids.len() + 2);
     bid_lines.push(header);
-    for level in &summary.bids {
-        bid_lines.push(format_level(level, GREEN, max_amount));
+    for (i, level) in summary.bids.iter().enumerate() {
+        let cum = bid_cumulative.get(i).copied().unwrap_or(0.0);
+        bid_lines.push(format_level(level, GREEN, cum, max_depth));
     }
     bid_lines.push(Line::from(Span::styled("  BIDS", Style::new().fg(GREEN).bold())));
 
@@ -171,10 +194,15 @@ fn render(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(bid_lines), chunks[2]);
 }
 
-fn format_level<'a>(level: &proto::Level, color: Color, max_amount: f64) -> Line<'a> {
-    let bar_len = if max_amount > 0.0 {
-        #[allow(clippy::cast_sign_loss)] // amount and max_amount are always non-negative
-        { ((level.amount / max_amount) * BAR_WIDTH as f64).round() as usize }
+fn format_level<'a>(
+    level: &proto::Level,
+    color: Color,
+    cumulative: f64,
+    max_depth: f64,
+) -> Line<'a> {
+    let bar_len = if max_depth > 0.0 {
+        #[allow(clippy::cast_sign_loss)]
+        { ((cumulative / max_depth) * BAR_WIDTH as f64).round() as usize }
     } else {
         0
     };
@@ -184,6 +212,7 @@ fn format_level<'a>(level: &proto::Level, color: Color, max_amount: f64) -> Line
         Span::styled(format!("  {:<10}", level.exchange), Style::new().fg(DIM)),
         Span::styled(format!("{:>14.8}", level.price), Style::new().fg(color)),
         Span::styled(format!("{:>14.8}", level.amount), Style::new().fg(color)),
+        Span::styled(format!("{cumulative:>14.8}"), Style::new().fg(DIM)),
         Span::raw("  "),
         Span::styled(bar, Style::new().fg(color)),
     ])

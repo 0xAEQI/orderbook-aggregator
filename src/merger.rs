@@ -27,15 +27,22 @@ const MAX_EXCHANGES: usize = 2;
 
 /// Fixed-size exchange book store — avoids `HashMap` hashing and heap allocation.
 /// With only 2 exchanges, a linear scan for name→index is faster than hashing.
-struct BookStore {
+pub struct BookStore {
     books: [Option<OrderBook>; MAX_EXCHANGES],
     /// Maps exchange name → slot index. Grows on first insert, never shrinks.
     names: [&'static str; MAX_EXCHANGES],
     len: usize,
 }
 
+impl Default for BookStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BookStore {
-    fn new() -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         Self {
             books: [const { None }; MAX_EXCHANGES],
             names: [""; MAX_EXCHANGES],
@@ -45,7 +52,7 @@ impl BookStore {
 
     /// Insert or update a book for the given exchange.
     #[inline]
-    fn insert(&mut self, book: OrderBook) {
+    pub fn insert(&mut self, book: OrderBook) {
         let name = book.exchange;
         // Linear scan — with k=2, this is 1-2 comparisons (faster than hashing).
         for i in 0..self.len {
@@ -152,7 +159,8 @@ fn merge_top_n(
 
 /// Merge all exchange order books into a single [`Summary`].
 #[inline]
-fn merge(books: &BookStore) -> Summary {
+#[must_use]
+pub fn merge(books: &BookStore) -> Summary {
     // Stack-allocated slice collectors — no heap alloc.
     let mut bid_slices = [&[][..]; MAX_EXCHANGES];
     let mut ask_slices = [&[][..]; MAX_EXCHANGES];

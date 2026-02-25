@@ -28,6 +28,7 @@ pub struct OrderbookService {
 }
 
 impl OrderbookService {
+    #[must_use]
     pub fn new(summary_rx: watch::Receiver<Summary>) -> Self {
         Self { summary_rx }
     }

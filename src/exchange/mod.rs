@@ -31,6 +31,7 @@ pub trait Exchange: Send + Sync + 'static {
 }
 
 /// WebSocket config optimized for low-latency reads.
+#[must_use]
 pub fn ws_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
     tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
         write_buffer_size: 0, // Flush every frame immediately.
