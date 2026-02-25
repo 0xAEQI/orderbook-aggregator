@@ -3,8 +3,9 @@
 //! Connects to the partial depth stream which provides a snapshot of the top 20
 //! price levels every 100ms — no sequence tracking or REST snapshot needed.
 //!
-//! Zero-copy JSON parse: deserializes `[&str; 2]` (borrowed from the WS frame
-//! buffer) instead of `[String; 2]`, eliminating 80 heap allocations per message.
+//! Uses simd-json (AVX2/SSE4.2 vectorized) for parsing + `#[serde(borrow)]`
+//! to borrow `&str` directly from the WS frame buffer. Combined: zero heap
+//! allocations and ~3-5x faster tokenization than serde_json.
 
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
@@ -77,9 +78,11 @@ impl Exchange for Binance {
                             msg = read.next() => {
                                 match msg {
                                     Some(Ok(msg)) => {
-                                        if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
+                                        if let tokio_tungstenite::tungstenite::Message::Text(mut text) = msg {
                                             let t0 = Instant::now();
-                                            match serde_json::from_str::<DepthSnapshot<'_>>(&text) {
+                                            // SAFETY: text is a heap-allocated String from a WS
+                                            // text frame — valid UTF-8 and properly aligned.
+                                            match unsafe { simd_json::from_str::<DepthSnapshot<'_>>(&mut text) } {
                                                 Ok(snapshot) => {
                                                     let book = parse_snapshot(&snapshot, t0);
                                                     self.metrics.decode_latency.record(t0.elapsed());

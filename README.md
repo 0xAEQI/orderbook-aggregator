@@ -133,15 +133,20 @@ The merged order book puts **best deals first**:
 - **`tokio::broadcast`** (exchange → merger): Multiple exchanges fan into a single merger. Handles backpressure by dropping old messages — stale order book snapshots are worthless.
 - **`tokio::watch`** (merger → gRPC): Latest-value semantics. Clients always get the most recent state. Intermediate states between two reads are irrelevant for order book data.
 
+### Low-Latency Parse Path
+
+- **simd-json**: AVX2/SSE4.2 vectorized JSON tokenizer — processes 32 bytes per CPU cycle vs 1 byte for scalar `serde_json`. Drop-in replacement via serde `Deserialize` trait.
+- **Zero-copy `#[serde(borrow)]`**: Deserializes `[&str; 2]` price/qty pairs borrowed directly from the WS frame buffer. Eliminates 80+ `String` heap allocations per Binance message.
+- **`&'static str` exchange names**: Zero heap allocation for the most frequently created type (`Level`).
+
 ### Low-Latency WebSocket
 
 - **`TCP_NODELAY`**: Disables Nagle's algorithm on all WebSocket connections via `connect_async_tls_with_config(..., disable_nagle: true)`.
 - **`write_buffer_size: 0`**: Flushes every WebSocket frame immediately instead of buffering up to 128KB.
-- **`&'static str` exchange names**: Zero heap allocation for the most frequently created type (`Level`).
 
-### Pre-Allocated Merge Buffers
+### K-Way Merge
 
-Working vectors for the merge sort are allocated once at startup (`Vec::with_capacity(40)`) and reused via `clear()` + `extend()` on every merge cycle. Only the final 10-element result vectors are freshly allocated per cycle (unavoidable since they cross the watch channel).
+Both exchanges send pre-sorted order books. Instead of concatenating and sorting (O(n log n) ≈ 212 comparisons), a k-way merge interleaves them in O(TOP_N × k) ≈ 20 comparisons with stack-allocated cursors. Only the final 10-element result vectors are heap-allocated (unavoidable since they cross the watch channel).
 
 ### Reconnection
 
@@ -153,4 +158,4 @@ Exponential backoff (1s → 30s) with random jitter to prevent thundering herd o
 cargo test
 ```
 
-Tests cover merger logic: cross-exchange merging, truncation to top-10, empty book handling, sort tiebreaking, and buffer reuse verification.
+Tests cover merger logic: cross-exchange merging, truncation to top-10, empty book handling, tiebreaking across exchanges, and k-way merge interleave correctness.

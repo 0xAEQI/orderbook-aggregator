@@ -4,9 +4,10 @@
 //! channel for the configured pair. Bitstamp sends full order book snapshots
 //! on each update (top 100 levels).
 //!
-//! Two-phase zero-copy parse: the outer envelope uses `&RawValue` to skip
-//! materializing the `data` field as `serde_json::Value` (dozens of allocs).
-//! The inner book data borrows `[&str; 2]` from the original WS frame buffer.
+//! Single-pass simd-json parse: the entire message (envelope + book data) is
+//! deserialized in one SIMD-accelerated pass. Non-data events get empty
+//! `bids`/`asks` via `#[serde(default)]` — no separate envelope parse needed
+//! since simd-json's vectorized stage 1 scans the whole buffer regardless.
 
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
@@ -15,7 +16,6 @@ use std::time::Instant;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
-use serde_json::value::RawValue;
 use tokio::sync::broadcast;
 use tokio_tungstenite::connect_async_tls_with_config;
 use tokio_tungstenite::tungstenite::Message;
@@ -34,21 +34,21 @@ pub struct Bitstamp {
     pub metrics: Arc<ExchangeMetrics>,
 }
 
-/// Outer envelope — `data` stays as raw JSON bytes, not materialized into Value.
+/// Full message — single-pass parse. For non-data events, `data.bids` and
+/// `data.asks` default to empty vecs (unknown fields in `data` are ignored).
 #[derive(Deserialize)]
-struct Envelope<'a> {
+struct BitstampMessage<'a> {
     #[serde(borrow)]
     event: &'a str,
-    #[serde(borrow)]
-    data: &'a RawValue,
+    #[serde(default)]
+    data: BookFields<'a>,
 }
 
-/// Inner book data — borrows price/amount strings from the JSON buffer.
-#[derive(Deserialize)]
-struct BookData<'a> {
-    #[serde(borrow)]
+#[derive(Deserialize, Default)]
+struct BookFields<'a> {
+    #[serde(borrow, default)]
     bids: Vec<[&'a str; 2]>,
-    #[serde(borrow)]
+    #[serde(borrow, default)]
     asks: Vec<[&'a str; 2]>,
 }
 
@@ -106,31 +106,25 @@ impl Exchange for Bitstamp {
                             }
                             msg = read.next() => {
                                 match msg {
-                                    Some(Ok(Message::Text(text))) => {
-                                        match serde_json::from_str::<Envelope<'_>>(&text) {
-                                            Ok(envelope) => {
-                                                match envelope.event {
+                                    Some(Ok(Message::Text(mut text))) => {
+                                        // SAFETY: text is a heap-allocated String from a WS
+                                        // text frame — valid UTF-8 and properly aligned.
+                                        match unsafe { simd_json::from_str::<BitstampMessage<'_>>(&mut text) } {
+                                            Ok(bts_msg) => {
+                                                match bts_msg.event {
                                                     "data" => {
                                                         let t0 = Instant::now();
-                                                        match serde_json::from_str::<BookData<'_>>(envelope.data.get()) {
-                                                            Ok(book_data) => {
-                                                                let book = parse_book(&book_data, t0);
-                                                                self.metrics.decode_latency.record(t0.elapsed());
-                                                                self.metrics.messages.fetch_add(1, Relaxed);
-                                                                let _ = sender.send(book);
-                                                            }
-                                                            Err(e) => {
-                                                                self.metrics.errors.fetch_add(1, Relaxed);
-                                                                warn!(exchange = "bitstamp", error = %e, "parse data error");
-                                                            }
-                                                        }
+                                                        let book = parse_book(&bts_msg.data, t0);
+                                                        self.metrics.decode_latency.record(t0.elapsed());
+                                                        self.metrics.messages.fetch_add(1, Relaxed);
+                                                        let _ = sender.send(book);
                                                     }
                                                     "bts:subscription_succeeded" => {
                                                         info!(exchange = "bitstamp", "subscription confirmed");
                                                     }
                                                     "bts:error" => {
                                                         self.metrics.errors.fetch_add(1, Relaxed);
-                                                        error!(exchange = "bitstamp", raw = %envelope.data, "server error");
+                                                        error!(exchange = "bitstamp", "server error");
                                                         break;
                                                     }
                                                     _ => {}
@@ -138,7 +132,7 @@ impl Exchange for Bitstamp {
                                             }
                                             Err(e) => {
                                                 self.metrics.errors.fetch_add(1, Relaxed);
-                                                warn!(exchange = "bitstamp", error = %e, "parse envelope error");
+                                                warn!(exchange = "bitstamp", error = %e, "parse error");
                                             }
                                         }
                                     }
@@ -193,7 +187,7 @@ fn parse_levels(exchange: &'static str, raw: &[[&str; 2]]) -> Vec<Level> {
     levels
 }
 
-fn parse_book(data: &BookData<'_>, received_at: Instant) -> OrderBook {
+fn parse_book(data: &BookFields<'_>, received_at: Instant) -> OrderBook {
     OrderBook {
         exchange: "bitstamp",
         bids: parse_levels("bitstamp", &data.bids),
