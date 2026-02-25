@@ -23,7 +23,7 @@ use tonic::Request;
 
 #[allow(clippy::pedantic)] // Generated code.
 pub mod proto {
-    tonic::include_proto!("orderbook");
+    include!("gen/orderbook.rs");
 }
 
 use proto::orderbook_aggregator_client::OrderbookAggregatorClient;
