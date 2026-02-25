@@ -98,7 +98,10 @@ impl Exchange for Binance {
                                                     let book = parse_snapshot(&snapshot, t0);
                                                     self.metrics.decode_latency.record(t0.elapsed());
                                                     self.metrics.messages.fetch_add(1, Relaxed);
-                                                    let _ = sender.send(book).await;
+                                                    if sender.send(book).await.is_err() {
+                                                        warn!(exchange = "binance", "channel closed, stopping");
+                                                        return Ok(());
+                                                    }
                                                 }
                                                 Err(e) => {
                                                     self.metrics.errors.fetch_add(1, Relaxed);
@@ -153,5 +156,71 @@ fn parse_snapshot(snapshot: &DepthSnapshot<'_>, received_at: Instant) -> OrderBo
         bids: super::parse_levels("binance", &snapshot.bids),
         asks: super::parse_levels("binance", &snapshot.asks),
         received_at,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::float_cmp)]
+mod tests {
+    use super::*;
+
+    /// Realistic Binance depth20 payload (truncated to 3 levels per side for clarity).
+    const BINANCE_JSON: &str = r#"{
+        "lastUpdateId": 123456789,
+        "bids": [
+            ["0.06824000", "12.50000000"],
+            ["0.06823000", "8.30000000"],
+            ["0.06822000", "5.00000000"]
+        ],
+        "asks": [
+            ["0.06825000", "10.00000000"],
+            ["0.06826000", "7.20000000"],
+            ["0.06827000", "3.50000000"]
+        ]
+    }"#;
+
+    #[test]
+    fn test_parse_binance_snapshot() {
+        let mut json = BINANCE_JSON.to_string();
+        // SAFETY: owned String, valid UTF-8, not accessed after mutation.
+        #[allow(unsafe_code)]
+        let snapshot: DepthSnapshot<'_> =
+            unsafe { simd_json::from_str(&mut json) }.expect("valid JSON");
+        let book = parse_snapshot(&snapshot, Instant::now());
+
+        assert_eq!(book.exchange, "binance");
+        assert_eq!(book.bids.len(), 3);
+        assert_eq!(book.asks.len(), 3);
+
+        // Bids: highest first (exchange sends them sorted).
+        assert_eq!(book.bids[0].price, 0.06824);
+        assert_eq!(book.bids[0].amount, 12.5);
+        assert_eq!(book.bids[2].price, 0.06822);
+
+        // Asks: lowest first.
+        assert_eq!(book.asks[0].price, 0.06825);
+        assert_eq!(book.asks[0].amount, 10.0);
+        assert_eq!(book.asks[2].price, 0.06827);
+
+        // All levels attributed to binance.
+        assert!(book.bids.iter().all(|l| l.exchange == "binance"));
+        assert!(book.asks.iter().all(|l| l.exchange == "binance"));
+    }
+
+    #[test]
+    fn test_parse_binance_ignores_unknown_fields() {
+        // Binance may add fields; serde should ignore them.
+        let mut json = r#"{
+            "lastUpdateId": 999,
+            "E": 1234567890,
+            "bids": [["1.0", "2.0"]],
+            "asks": [["3.0", "4.0"]]
+        }"#
+        .to_string();
+        #[allow(unsafe_code)]
+        let snapshot: DepthSnapshot<'_> =
+            unsafe { simd_json::from_str(&mut json) }.expect("should ignore unknown fields");
+        assert_eq!(snapshot.bids.len(), 1);
+        assert_eq!(snapshot.asks.len(), 1);
     }
 }

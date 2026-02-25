@@ -43,7 +43,7 @@ impl BookStore {
         }
     }
 
-    /// Insert or update a book. Returns the slot index.
+    /// Insert or update a book for the given exchange.
     #[inline]
     fn insert(&mut self, book: OrderBook) {
         let name = book.exchange;

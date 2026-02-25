@@ -2,6 +2,16 @@
 
 use clap::Parser;
 
+fn validate_symbol(s: &str) -> Result<String, String> {
+    if s.is_empty() {
+        return Err("symbol cannot be empty".to_string());
+    }
+    if !s.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(format!("symbol must be alphanumeric, got: {s}"));
+    }
+    Ok(s.to_lowercase())
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(name = "orderbook-aggregator")]
 #[command(
@@ -9,7 +19,7 @@ use clap::Parser;
 )]
 pub struct Config {
     /// Trading pair symbol (e.g., ethbtc)
-    #[arg(short, long, default_value = "ethbtc")]
+    #[arg(short, long, default_value = "ethbtc", value_parser = validate_symbol)]
     pub symbol: String,
 
     /// gRPC server port

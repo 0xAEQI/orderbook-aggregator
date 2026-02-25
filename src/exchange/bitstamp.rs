@@ -169,7 +169,10 @@ impl Exchange for Bitstamp {
                                                         let book = parse_book(&bts_msg.data, t0);
                                                         self.metrics.decode_latency.record(t0.elapsed());
                                                         self.metrics.messages.fetch_add(1, Relaxed);
-                                                        let _ = sender.send(book).await;
+                                                        if sender.send(book).await.is_err() {
+                                                            warn!(exchange = "bitstamp", "channel closed, stopping");
+                                                            return Ok(());
+                                                        }
                                                     }
                                                     "bts:subscription_succeeded" => {
                                                         info!(exchange = "bitstamp", "subscription confirmed");
@@ -235,5 +238,94 @@ fn parse_book(data: &BookFields<'_>, received_at: Instant) -> OrderBook {
         bids: super::parse_levels("bitstamp", &data.bids),
         asks: super::parse_levels("bitstamp", &data.asks),
         received_at,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::float_cmp)]
+mod tests {
+    use super::*;
+    use crate::types::MAX_LEVELS;
+
+    /// Realistic Bitstamp `order_book` message (truncated to 3 levels per side).
+    const BITSTAMP_JSON: &str = r#"{
+        "event": "data",
+        "channel": "order_book_ethbtc",
+        "data": {
+            "timestamp": "1700000000",
+            "microtimestamp": "1700000000000000",
+            "bids": [
+                ["0.06824000", "12.50000000"],
+                ["0.06823000", "8.30000000"],
+                ["0.06822000", "5.00000000"]
+            ],
+            "asks": [
+                ["0.06825000", "10.00000000"],
+                ["0.06826000", "7.20000000"],
+                ["0.06827000", "3.50000000"]
+            ]
+        }
+    }"#;
+
+    #[test]
+    fn test_parse_bitstamp_data_message() {
+        let mut json = BITSTAMP_JSON.to_string();
+        #[allow(unsafe_code)]
+        let msg: BitstampMessage<'_> =
+            unsafe { simd_json::from_str(&mut json) }.expect("valid JSON");
+
+        assert_eq!(msg.event, "data");
+
+        let book = parse_book(&msg.data, Instant::now());
+        assert_eq!(book.exchange, "bitstamp");
+        assert_eq!(book.bids.len(), 3);
+        assert_eq!(book.asks.len(), 3);
+
+        assert_eq!(book.bids[0].price, 0.06824);
+        assert_eq!(book.bids[0].amount, 12.5);
+        assert_eq!(book.asks[0].price, 0.06825);
+        assert!(book.bids.iter().all(|l| l.exchange == "bitstamp"));
+    }
+
+    #[test]
+    fn test_parse_bitstamp_non_data_event() {
+        let mut json = r#"{
+            "event": "bts:subscription_succeeded",
+            "channel": "order_book_ethbtc",
+            "data": {}
+        }"#
+        .to_string();
+        #[allow(unsafe_code)]
+        let msg: BitstampMessage<'_> =
+            unsafe { simd_json::from_str(&mut json) }.expect("valid JSON");
+
+        assert_eq!(msg.event, "bts:subscription_succeeded");
+        // Non-data events get empty bids/asks via #[serde(default)].
+        assert!(msg.data.bids.is_empty());
+        assert!(msg.data.asks.is_empty());
+    }
+
+    #[test]
+    fn test_deserialize_capped_levels_caps_at_max() {
+        // Build a JSON array with 50 levels — more than MAX_LEVELS (20).
+        let levels: Vec<String> = (0..50)
+            .map(|i| format!("[\"{}.0\", \"1.0\"]", 100 + i))
+            .collect();
+        let json_array = format!("[{}]", levels.join(","));
+
+        let mut json = format!(
+            r#"{{"event":"data","data":{{"bids":{json_array},"asks":[]}}}}"#,
+        );
+        #[allow(unsafe_code)]
+        let msg: BitstampMessage<'_> =
+            unsafe { simd_json::from_str(&mut json) }.expect("valid JSON");
+
+        // Should cap at MAX_LEVELS, not error.
+        assert_eq!(msg.data.bids.len(), MAX_LEVELS);
+        assert!(msg.data.asks.is_empty());
+
+        // Verify the first and last captured levels are correct.
+        assert_eq!(msg.data.bids[0], ["100.0", "1.0"]);
+        assert_eq!(msg.data.bids[MAX_LEVELS - 1], ["119.0", "1.0"]);
     }
 }
