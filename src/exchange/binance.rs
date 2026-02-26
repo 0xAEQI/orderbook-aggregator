@@ -60,7 +60,9 @@ impl WsHandler for BinanceHandler {
         if seq > 0 && self.last_seq > 0 && seq <= self.last_seq {
             warn!(
                 exchange = "binance",
-                seq, last_seq = self.last_seq, "out-of-order update (stale or duplicate)"
+                seq,
+                last_seq = self.last_seq,
+                "out-of-order update (stale or duplicate)"
             );
             metrics.errors.fetch_add(1, Relaxed);
             return HandleResult::Continue;

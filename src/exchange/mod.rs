@@ -180,8 +180,7 @@ pub async fn run_ws_loop<H: WsHandler>(
 
         info!(exchange = H::NAME, %url, "connecting");
 
-        let connect_fut =
-            connect_async_tls_with_config(&url, Some(ws_config), true, None);
+        let connect_fut = connect_async_tls_with_config(&url, Some(ws_config), true, None);
         match tokio::time::timeout(CONNECT_TIMEOUT, connect_fut).await {
             Err(_) => {
                 metrics.errors.fetch_add(1, Relaxed);
@@ -206,8 +205,7 @@ pub async fn run_ws_loop<H: WsHandler>(
                         return Ok(());
                     }
                     metrics.reconnections.fetch_add(1, Relaxed);
-                    if !backoff_sleep(&mut backoff_ms, MAX_BACKOFF_MS, H::NAME, &cancel).await
-                    {
+                    if !backoff_sleep(&mut backoff_ms, MAX_BACKOFF_MS, H::NAME, &cancel).await {
                         return Ok(());
                     }
                     continue;

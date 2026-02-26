@@ -74,8 +74,8 @@ impl WsHandler for BitstampHandler {
             }
             "bts:error" => {
                 metrics.errors.fetch_add(1, Relaxed);
-                let msg = crate::json_walker::extract_string(text, b"\"message\":")
-                    .unwrap_or("unknown");
+                let msg =
+                    crate::json_walker::extract_string(text, b"\"message\":").unwrap_or("unknown");
                 error!(exchange = "bitstamp", message = msg, "server error");
                 return HandleResult::Reconnect;
             }
