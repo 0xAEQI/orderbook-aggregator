@@ -2,9 +2,6 @@ FROM rust:1.93-bookworm AS builder
 
 WORKDIR /app
 
-# Install protobuf compiler.
-RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
-
 # Cache dependency build: copy manifests first, build with dummy src.
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY proto/ proto/

@@ -49,12 +49,21 @@ async fn grpc_streams_merged_summary() {
         }
     });
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // Connect gRPC client and subscribe.
-    let mut client = OrderbookAggregatorClient::connect(format!("http://{addr}"))
-        .await
-        .unwrap();
+    // Retry connection until the gRPC server is ready (no sleep race).
+    let mut client = {
+        let url = format!("http://{addr}");
+        let mut attempts = 0;
+        loop {
+            match OrderbookAggregatorClient::connect(url.clone()).await {
+                Ok(c) => break c,
+                Err(_) if attempts < 20 => {
+                    attempts += 1;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(e) => panic!("gRPC server did not start: {e}"),
+            }
+        }
+    };
     let mut stream = client
         .book_summary(Request::new(proto::Empty {}))
         .await
