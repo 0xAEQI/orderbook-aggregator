@@ -111,7 +111,10 @@ impl<'a> Scanner<'a> {
 
     /// Seek to a key pattern and read levels. Returns empty if key is absent.
     #[inline]
-    pub(crate) fn read_optional_levels(&mut self, finder: &memmem::Finder<'_>) -> Option<Levels<'a>> {
+    pub(crate) fn read_optional_levels(
+        &mut self,
+        finder: &memmem::Finder<'_>,
+    ) -> Option<Levels<'a>> {
         if self.seek(finder).is_some() {
             read_levels(self)
         } else {
@@ -126,7 +129,9 @@ impl<'a> Scanner<'a> {
 /// skip past the remaining elements to the next key. No drain loop needed:
 /// level data contains only decimal strings, so `"asks":` can never
 /// false-match inside it.
-pub(crate) fn read_levels<'a, const N: usize>(s: &mut Scanner<'a>) -> Option<ArrayVec<[&'a str; 2], N>> {
+pub(crate) fn read_levels<'a, const N: usize>(
+    s: &mut Scanner<'a>,
+) -> Option<ArrayVec<[&'a str; 2], N>> {
     if !s.expect(b'[') {
         return None;
     }

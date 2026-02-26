@@ -17,7 +17,7 @@ use memchr::memmem;
 use rtrb::Producer;
 use tracing::{error, info, warn};
 
-use crate::json_walker::{Scanner, Levels, extract_string};
+use crate::json_walker::{Levels, Scanner, extract_string};
 use crate::metrics::ExchangeMetrics;
 use crate::types::OrderBook;
 
@@ -113,8 +113,7 @@ impl WsHandler for BitstampHandler {
             }
             "bts:error" => {
                 metrics.errors.fetch_add(1, Relaxed);
-                let msg =
-                    extract_string(text, b"\"message\":").unwrap_or("unknown");
+                let msg = extract_string(text, b"\"message\":").unwrap_or("unknown");
                 error!(exchange = "bitstamp", message = msg, "server error");
                 return HandleResult::Reconnect;
             }

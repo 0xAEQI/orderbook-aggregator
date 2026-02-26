@@ -12,7 +12,7 @@ use memchr::memmem;
 use rtrb::Producer;
 use tracing::warn;
 
-use crate::json_walker::{Scanner, Levels, read_levels};
+use crate::json_walker::{Levels, Scanner, read_levels};
 use crate::metrics::ExchangeMetrics;
 use crate::types::OrderBook;
 
