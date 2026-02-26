@@ -138,6 +138,7 @@ impl Exchange for Binance {
                 return Ok(());
             }
 
+            self.metrics.reconnections.fetch_add(1, Relaxed);
             if !super::backoff_sleep(&mut backoff_ms, super::MAX_BACKOFF_MS, "binance", &cancel).await {
                 return Ok(());
             }

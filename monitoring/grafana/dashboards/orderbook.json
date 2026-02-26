@@ -102,26 +102,26 @@
       }
     },
     {
-      "title": "Error Rate",
+      "title": "Errors",
+      "description": "Total parse/connection errors per exchange",
       "type": "stat",
       "id": 5,
       "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
       "targets": [
         {
-          "expr": "sum(rate(orderbook_errors_total[$__rate_interval]))",
-          "legendFormat": "errors/s",
+          "expr": "orderbook_errors_total",
+          "legendFormat": "{{exchange}}",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.01 },
-              { "color": "red", "value": 1 }
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 10 }
             ]
           }
         },
@@ -137,11 +137,151 @@
       "id": 101
     },
     {
+      "title": "E2E P50 (peak)",
+      "description": "Worst median e2e latency observed in the dashboard time range",
+      "type": "stat",
+      "id": 20,
+      "gridPos": { "h": 3, "w": 6, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "expr": "max_over_time(histogram_quantile(0.50, sum(rate(orderbook_e2e_duration_seconds_bucket[$__rate_interval])) by (le))[$__range:])",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#73BF69", "value": null },
+              { "color": "#FADE2A", "value": 0.0001 },
+              { "color": "#F2495C", "value": 0.001 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "textMode": "auto",
+        "colorMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "title": "E2E P95 (peak)",
+      "description": "Worst P95 e2e latency observed in the dashboard time range",
+      "type": "stat",
+      "id": 21,
+      "gridPos": { "h": 3, "w": 6, "x": 6, "y": 6 },
+      "targets": [
+        {
+          "expr": "max_over_time(histogram_quantile(0.95, sum(rate(orderbook_e2e_duration_seconds_bucket[$__rate_interval])) by (le))[$__range:])",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#73BF69", "value": null },
+              { "color": "#FADE2A", "value": 0.0001 },
+              { "color": "#F2495C", "value": 0.001 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "textMode": "auto",
+        "colorMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "title": "E2E P99 (peak)",
+      "description": "Worst P99 e2e latency observed in the dashboard time range",
+      "type": "stat",
+      "id": 22,
+      "gridPos": { "h": 3, "w": 6, "x": 12, "y": 6 },
+      "targets": [
+        {
+          "expr": "max_over_time(histogram_quantile(0.99, sum(rate(orderbook_e2e_duration_seconds_bucket[$__rate_interval])) by (le))[$__range:])",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#73BF69", "value": null },
+              { "color": "#FADE2A", "value": 0.0001 },
+              { "color": "#F2495C", "value": 0.001 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "textMode": "auto",
+        "colorMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "title": "E2E P99.9 (peak)",
+      "description": "Worst P99.9 e2e latency observed in the dashboard time range — tail latency ceiling",
+      "type": "stat",
+      "id": 23,
+      "gridPos": { "h": 3, "w": 6, "x": 18, "y": 6 },
+      "targets": [
+        {
+          "expr": "max_over_time(histogram_quantile(0.999, sum(rate(orderbook_e2e_duration_seconds_bucket[$__rate_interval])) by (le))[$__range:])",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#73BF69", "value": null },
+              { "color": "#FADE2A", "value": 0.0005 },
+              { "color": "#F2495C", "value": 0.005 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "textMode": "auto",
+        "colorMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
       "title": "E2E Latency — P50 / P95 / P99 / P99.9",
       "description": "End-to-end latency from WebSocket receive to merged orderbook publish. Dashed lines at 1ms (warning) and 10ms (critical).",
       "type": "timeseries",
       "id": 6,
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
       "targets": [
         {
           "expr": "histogram_quantile(0.50, sum(rate(orderbook_e2e_duration_seconds_bucket[$__rate_interval])) by (le))",
@@ -215,7 +355,7 @@
       "description": "Heatmap showing observation density across latency buckets over time. Brighter = more observations.",
       "type": "heatmap",
       "id": 7,
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
       "targets": [
         {
           "expr": "sum(increase(orderbook_e2e_duration_seconds_bucket[$__rate_interval])) by (le)",
@@ -250,7 +390,7 @@
     {
       "type": "row",
       "title": "Throughput",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
       "collapsed": false,
       "id": 102
     },
@@ -258,7 +398,7 @@
       "title": "Messages / sec (by exchange)",
       "type": "timeseries",
       "id": 8,
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
       "targets": [
         {
           "expr": "rate(orderbook_messages_total[$__rate_interval])",
@@ -275,41 +415,78 @@
       }
     },
     {
-      "title": "Errors / sec (by exchange)",
-      "type": "timeseries",
+      "title": "Reconnections (by exchange)",
+      "description": "Total WebSocket reconnection attempts per exchange. Non-zero indicates network instability or exchange-side disconnects.",
+      "type": "stat",
       "id": 9,
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 18 },
       "targets": [
         {
-          "expr": "rate(orderbook_errors_total[$__rate_interval])",
+          "expr": "orderbook_reconnections_total",
           "legendFormat": "{{exchange}}",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2
-          },
+          "color": { "mode": "thresholds" },
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
-              { "color": "red", "value": 0.1 }
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
             ]
           }
         },
         "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "textMode": "auto",
+        "colorMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "title": "Errors (by exchange)",
+      "description": "Total parse/connection errors per exchange. Includes parse failures, malformed levels, sequence gaps, and connection errors.",
+      "type": "stat",
+      "id": 14,
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 18 },
+      "targets": [
+        {
+          "expr": "orderbook_errors_total",
+          "legendFormat": "{{exchange}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "textMode": "auto",
+        "colorMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
       }
     },
 
     {
       "type": "row",
       "title": "Decode Latency",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 },
       "collapsed": false,
       "id": 103
     },
@@ -318,7 +495,7 @@
       "description": "JSON decode + parse latency per exchange. Dashed lines at 1ms (warning) and 10ms (critical).",
       "type": "timeseries",
       "id": 10,
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
       "targets": [
         {
           "expr": "histogram_quantile(0.50, sum(rate(orderbook_decode_duration_seconds_bucket[$__rate_interval])) by (le, exchange))",
@@ -392,7 +569,7 @@
       "description": "Heatmap of decode latency distribution across all exchanges.",
       "type": "heatmap",
       "id": 11,
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 27 },
       "targets": [
         {
           "expr": "sum(increase(orderbook_decode_duration_seconds_bucket[$__rate_interval])) by (le)",
@@ -427,7 +604,7 @@
     {
       "type": "row",
       "title": "Merge Latency",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 },
       "collapsed": false,
       "id": 104
     },
@@ -436,7 +613,7 @@
       "description": "Order book k-way merge latency. Dashed lines at 1ms (warning) and 10ms (critical).",
       "type": "timeseries",
       "id": 12,
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
       "targets": [
         {
           "expr": "histogram_quantile(0.50, sum(rate(orderbook_merge_duration_seconds_bucket[$__rate_interval])) by (le))",
@@ -510,7 +687,7 @@
       "description": "Heatmap of merge latency distribution over time.",
       "type": "heatmap",
       "id": 13,
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
       "targets": [
         {
           "expr": "sum(increase(orderbook_merge_duration_seconds_bucket[$__rate_interval])) by (le)",

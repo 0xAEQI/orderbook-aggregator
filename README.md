@@ -126,6 +126,7 @@ curl localhost:9090/metrics   # Prometheus text format
 Exposed metrics:
 - `orderbook_messages_total{exchange}` — WebSocket messages received
 - `orderbook_errors_total{exchange}` — Parse/connection errors
+- `orderbook_reconnections_total{exchange}` — WebSocket reconnection attempts
 - `orderbook_merges_total` — Order book merge operations
 - `orderbook_exchange_up{exchange}` — Connection status gauge (1=connected)
 - `orderbook_uptime_seconds` — Process uptime
