@@ -11,6 +11,5 @@
 
 fn main() {
     #[cfg(feature = "codegen")]
-    tonic_build::compile_protos("proto/orderbook.proto")
-        .expect("failed to compile protos");
+    tonic_build::compile_protos("proto/orderbook.proto").expect("failed to compile protos");
 }

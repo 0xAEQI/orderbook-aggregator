@@ -131,7 +131,10 @@ pub fn run_spsc(
 
     let mut books = BookStore::new();
 
-    info!("merger started (SPSC busy-poll, {} consumers)", consumers.len());
+    info!(
+        "merger started (SPSC busy-poll, {} consumers)",
+        consumers.len()
+    );
 
     loop {
         if cancel.is_cancelled() {
@@ -159,6 +162,7 @@ pub fn run_spsc(
         if let Some(decode_start) = latest_decode_start {
             let t0 = Instant::now();
             books.evict_stale(t0, STALE_THRESHOLD);
+            let active: ArrayVec<&str, MAX_EXCHANGES> = books.iter().map(|b| b.exchange).collect();
             let summary = merge(&books);
             metrics.merge_latency.record(t0.elapsed());
             metrics.merges.fetch_add(1, Relaxed);
@@ -166,6 +170,7 @@ pub fn run_spsc(
                 spread = summary.spread,
                 bids = summary.bids.len(),
                 asks = summary.asks.len(),
+                exchanges = ?active,
                 "merged"
             );
             let _ = summary_tx.send(summary);
@@ -464,5 +469,70 @@ mod tests {
         // Only fresh_ex should survive.
         assert_eq!(summary.bids.len(), 1);
         assert_eq!(summary.bids[0].exchange, "fresh_ex");
+    }
+
+    #[test]
+    fn bookstore_insert_updates_existing() {
+        let mut books = BookStore::new();
+
+        books.insert(book(
+            "binance",
+            &[level("binance", 100.0, 1.0)],
+            &[level("binance", 101.0, 1.0)],
+        ));
+        // Second insert with same exchange name should overwrite.
+        books.insert(book(
+            "binance",
+            &[level("binance", 200.0, 5.0)],
+            &[level("binance", 201.0, 5.0)],
+        ));
+
+        let summary = merge(&books);
+        // Should see the updated price, not the original.
+        assert_eq!(summary.bids.len(), 1);
+        assert_eq!(summary.bids[0].price, FixedPoint::from_f64(200.0));
+        assert_eq!(summary.asks[0].price, FixedPoint::from_f64(201.0));
+    }
+
+    #[test]
+    fn bookstore_insert_overflow() {
+        let mut books = BookStore::new();
+
+        // MAX_EXCHANGES is 2 — fill both slots.
+        books.insert(book("a", &[level("a", 100.0, 1.0)], &[]));
+        books.insert(book("b", &[level("b", 99.0, 1.0)], &[]));
+        // Third exchange should be silently dropped.
+        books.insert(book("c", &[level("c", 98.0, 1.0)], &[]));
+
+        let summary = merge(&books);
+        // Only 2 levels (from a and b), not 3.
+        assert_eq!(summary.bids.len(), 2);
+        let exchanges: Vec<&str> = summary.bids.iter().map(|l| l.exchange).collect();
+        assert!(exchanges.contains(&"a"));
+        assert!(exchanges.contains(&"b"));
+        assert!(!exchanges.contains(&"c"));
+    }
+
+    #[test]
+    fn bookstore_evict_stale_keeps_fresh() {
+        let mut books = BookStore::new();
+
+        // Insert two fresh books (decode_start = now).
+        books.insert(book(
+            "binance",
+            &[level("binance", 100.0, 1.0)],
+            &[level("binance", 101.0, 1.0)],
+        ));
+        books.insert(book(
+            "bitstamp",
+            &[level("bitstamp", 99.0, 2.0)],
+            &[level("bitstamp", 102.0, 2.0)],
+        ));
+
+        // Evict with current time — neither should be evicted.
+        books.evict_stale(Instant::now(), STALE_THRESHOLD);
+        let summary = merge(&books);
+        assert_eq!(summary.bids.len(), 2);
+        assert_eq!(summary.asks.len(), 2);
     }
 }

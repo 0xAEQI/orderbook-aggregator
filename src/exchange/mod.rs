@@ -60,7 +60,14 @@ fn parse_levels(exchange: &'static str, raw: &[[&str; 2]]) -> Option<ArrayVec<Le
     for &[price, amount] in raw {
         let p = FixedPoint::parse(price)?;
         let a = FixedPoint::parse(amount)?;
-        if levels.try_push(Level { exchange, price: p, amount: a }).is_err() {
+        if levels
+            .try_push(Level {
+                exchange,
+                price: p,
+                amount: a,
+            })
+            .is_err()
+        {
             break;
         }
     }
@@ -112,7 +119,7 @@ pub async fn backoff_sleep(
     exchange: &'static str,
     cancel: &CancellationToken,
 ) -> bool {
-    let jitter = rand::random::<u64>() % (*backoff_ms / 2).max(1);
+    let jitter = fastrand::u64(0..(*backoff_ms / 2).max(1));
     let delay = *backoff_ms + jitter;
     tracing::warn!(exchange, delay_ms = delay, "reconnecting");
     tokio::select! {
@@ -121,4 +128,47 @@ pub async fn backoff_sleep(
     }
     *backoff_ms = (*backoff_ms * 2).min(max_ms);
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::FixedPoint;
+
+    fn test_book(exchange: &'static str) -> OrderBook {
+        let mut bids = ArrayVec::new();
+        bids.push(Level {
+            exchange,
+            price: FixedPoint::from_f64(100.0),
+            amount: FixedPoint::from_f64(1.0),
+        });
+        let mut asks = ArrayVec::new();
+        asks.push(Level {
+            exchange,
+            price: FixedPoint::from_f64(101.0),
+            amount: FixedPoint::from_f64(1.0),
+        });
+        OrderBook {
+            exchange,
+            bids,
+            asks,
+            decode_start: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn try_send_ring_full_drops() {
+        // 1-slot ring: push one to fill it, then push another — should drop, not error.
+        let (mut producer, _consumer) = rtrb::RingBuffer::new(1);
+        assert!(try_send_book(&mut producer, test_book("a"), "a"));
+        // Ring is now full — next push drops the book but returns true.
+        assert!(try_send_book(&mut producer, test_book("a"), "a"));
+    }
+
+    #[test]
+    fn try_send_abandoned_returns_false() {
+        let (mut producer, consumer) = rtrb::RingBuffer::new(4);
+        drop(consumer); // Abandon the consumer.
+        assert!(!try_send_book(&mut producer, test_book("a"), "a"));
+    }
 }

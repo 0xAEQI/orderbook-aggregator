@@ -106,8 +106,7 @@ impl Exchange for Binance {
                         if seq > 0 && last_seq > 0 && seq <= last_seq {
                             warn!(
                                 exchange = "binance",
-                                seq, last_seq,
-                                "out-of-order update (stale or duplicate)"
+                                seq, last_seq, "out-of-order update (stale or duplicate)"
                             );
                             self.metrics.errors.fetch_add(1, Relaxed);
                             continue;
@@ -139,7 +138,9 @@ impl Exchange for Binance {
             }
 
             self.metrics.reconnections.fetch_add(1, Relaxed);
-            if !super::backoff_sleep(&mut backoff_ms, super::MAX_BACKOFF_MS, "binance", &cancel).await {
+            if !super::backoff_sleep(&mut backoff_ms, super::MAX_BACKOFF_MS, "binance", &cancel)
+                .await
+            {
                 return Ok(());
             }
         }
@@ -181,11 +182,17 @@ mod tests {
         assert_eq!(book.asks.len(), 3);
 
         assert_eq!(book.bids[0].price, FixedPoint::parse("0.06824000").unwrap());
-        assert_eq!(book.bids[0].amount, FixedPoint::parse("12.50000000").unwrap());
+        assert_eq!(
+            book.bids[0].amount,
+            FixedPoint::parse("12.50000000").unwrap()
+        );
         assert_eq!(book.bids[2].price, FixedPoint::parse("0.06822000").unwrap());
 
         assert_eq!(book.asks[0].price, FixedPoint::parse("0.06825000").unwrap());
-        assert_eq!(book.asks[0].amount, FixedPoint::parse("10.00000000").unwrap());
+        assert_eq!(
+            book.asks[0].amount,
+            FixedPoint::parse("10.00000000").unwrap()
+        );
         assert_eq!(book.asks[2].price, FixedPoint::parse("0.06827000").unwrap());
 
         assert!(book.bids.iter().all(|l| l.exchange == "binance"));

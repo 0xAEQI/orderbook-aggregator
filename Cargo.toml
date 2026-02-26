@@ -28,7 +28,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"
-rand = "0.9"
+fastrand = "2"
 axum = "0.7"
 arrayvec = "0.7"
 memchr = "2"

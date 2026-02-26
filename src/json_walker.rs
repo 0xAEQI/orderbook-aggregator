@@ -53,7 +53,11 @@ struct Scanner<'a> {
 impl<'a> Scanner<'a> {
     #[inline]
     fn new(json: &'a str) -> Self {
-        Self { buf: json.as_bytes(), src: json, pos: 0 }
+        Self {
+            buf: json.as_bytes(),
+            src: json,
+            pos: 0,
+        }
     }
 
     #[inline]
@@ -333,9 +337,7 @@ mod tests {
             .map(|i| format!("[\"{}.0\", \"1.0\"]", 100 + i))
             .collect();
         let json_array = levels.join(",");
-        let json = format!(
-            r#"{{"event":"data","data":{{"bids":[{json_array}],"asks":[]}}}}"#,
-        );
+        let json = format!(r#"{{"event":"data","data":{{"bids":[{json_array}],"asks":[]}}}}"#,);
         let (event, bids, asks) = walk_bitstamp(&json).expect("valid JSON");
         assert_eq!(event, "data");
         assert_eq!(bids.len(), MAX_LEVELS);

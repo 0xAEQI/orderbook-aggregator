@@ -42,9 +42,8 @@ impl Exchange for Bitstamp {
         cancel: CancellationToken,
     ) -> Result<()> {
         let channel = format!("order_book_{}", symbol.to_lowercase());
-        let subscribe_msg = format!(
-            r#"{{"event":"bts:subscribe","data":{{"channel":"{channel}"}}}}"#
-        );
+        let subscribe_msg =
+            format!(r#"{{"event":"bts:subscribe","data":{{"channel":"{channel}"}}}}"#);
         let ws_config = super::ws_config();
         let mut backoff_ms = super::INITIAL_BACKOFF_MS;
 
@@ -116,7 +115,8 @@ impl Exchange for Bitstamp {
                         };
                         match event {
                             "data" => {
-                                let Some(book) = super::build_book("bitstamp", &bids, &asks, t0) else {
+                                let Some(book) = super::build_book("bitstamp", &bids, &asks, t0)
+                                else {
                                     self.metrics.errors.fetch_add(1, Relaxed);
                                     warn!(exchange = "bitstamp", "malformed level");
                                     continue;
@@ -132,8 +132,9 @@ impl Exchange for Bitstamp {
                             }
                             "bts:error" => {
                                 self.metrics.errors.fetch_add(1, Relaxed);
-                                let msg = crate::json_walker::extract_string(&text, b"\"message\":")
-                                    .unwrap_or("unknown");
+                                let msg =
+                                    crate::json_walker::extract_string(&text, b"\"message\":")
+                                        .unwrap_or("unknown");
                                 error!(exchange = "bitstamp", message = msg, "server error");
                                 break;
                             }
@@ -154,7 +155,9 @@ impl Exchange for Bitstamp {
             }
 
             self.metrics.reconnections.fetch_add(1, Relaxed);
-            if !super::backoff_sleep(&mut backoff_ms, super::MAX_BACKOFF_MS, "bitstamp", &cancel).await {
+            if !super::backoff_sleep(&mut backoff_ms, super::MAX_BACKOFF_MS, "bitstamp", &cancel)
+                .await
+            {
                 return Ok(());
             }
         }
@@ -205,7 +208,10 @@ mod tests {
         assert_eq!(book.asks.len(), 3);
 
         assert_eq!(book.bids[0].price, FixedPoint::parse("0.06824000").unwrap());
-        assert_eq!(book.bids[0].amount, FixedPoint::parse("12.50000000").unwrap());
+        assert_eq!(
+            book.bids[0].amount,
+            FixedPoint::parse("12.50000000").unwrap()
+        );
         assert_eq!(book.asks[0].price, FixedPoint::parse("0.06825000").unwrap());
         assert!(book.bids.iter().all(|l| l.exchange == "bitstamp"));
     }
@@ -229,9 +235,7 @@ mod tests {
             .collect();
         let json_array = format!("[{}]", levels.join(","));
 
-        let json = format!(
-            r#"{{"event":"data","data":{{"bids":{json_array},"asks":[]}}}}"#,
-        );
+        let json = format!(r#"{{"event":"data","data":{{"bids":{json_array},"asks":[]}}}}"#,);
         let book = parse_order_book_json(&json).expect("valid JSON");
 
         // Should cap at MAX_LEVELS, not error.
@@ -240,6 +244,9 @@ mod tests {
 
         // Verify the first and last captured levels are correct.
         assert_eq!(book.bids[0].price, FixedPoint::parse("100.0").unwrap());
-        assert_eq!(book.bids[MAX_LEVELS - 1].price, FixedPoint::parse("119.0").unwrap());
+        assert_eq!(
+            book.bids[MAX_LEVELS - 1].price,
+            FixedPoint::parse("119.0").unwrap()
+        );
     }
 }

@@ -88,11 +88,10 @@ Production P50 (live exchange data): **6μs**. P99: **sub-20μs**.
 All hot-path types are stack-allocated and `Copy`-safe:
 
 ```
-Level (24 bytes):
+Level (32 bytes):
   exchange: &'static str  (16 bytes: ptr + len)
   price:    FixedPoint     (8 bytes: u64)
   amount:   FixedPoint     (8 bytes: u64)
-  [Note: &'static str is 16 bytes but Level is packed to 32 by alignment]
 
 OrderBook (~1KB):
   exchange:     &'static str

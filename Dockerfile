@@ -22,9 +22,12 @@ RUN touch src/main.rs src/client.rs src/lib.rs benches/hot_path.rs && cargo buil
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
+RUN useradd -r -s /bin/false app
 
 COPY --from=builder /app/target/release/orderbook-aggregator /usr/local/bin/
 COPY --from=builder /app/target/release/client /usr/local/bin/orderbook-client
+
+USER app
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:9090/health || exit 1

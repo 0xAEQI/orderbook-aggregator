@@ -13,7 +13,7 @@ use orderbook_aggregator::merger;
 use orderbook_aggregator::metrics::Metrics;
 use orderbook_aggregator::server::proto::orderbook_aggregator_client::OrderbookAggregatorClient;
 use orderbook_aggregator::server::proto::orderbook_aggregator_server::OrderbookAggregatorServer;
-use orderbook_aggregator::server::{proto, OrderbookService};
+use orderbook_aggregator::server::{OrderbookService, proto};
 use orderbook_aggregator::types::{FixedPoint, Level, OrderBook, Summary};
 
 /// End-to-end: mock exchange data → SPSC → merger → gRPC server → gRPC client.

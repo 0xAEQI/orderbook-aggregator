@@ -14,11 +14,11 @@ use std::time::Instant;
 use arrayvec::ArrayVec;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Layout},
     style::{Color, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Padding, Paragraph},
-    Frame,
 };
 use tonic::Request;
 
@@ -133,7 +133,10 @@ fn render(frame: &mut Frame, app: &App) {
 
     // ── Ask rows (highest at top → best ask at bottom) ──────────────────
     let mut ask_lines: Vec<Line<'_>> = Vec::with_capacity(summary.asks.len() + 2);
-    ask_lines.push(Line::from(Span::styled("  ASKS", Style::new().fg(RED).bold())));
+    ask_lines.push(Line::from(Span::styled(
+        "  ASKS",
+        Style::new().fg(RED).bold(),
+    )));
     ask_lines.push(header.clone());
     // asks come sorted best-first from the server; reverse so highest is at top
     for (i, level) in summary.asks.iter().rev().enumerate() {
@@ -164,13 +167,13 @@ fn render(frame: &mut Frame, app: &App) {
         bid_lines.push(format_level(level, GREEN, cum, max_depth));
     }
     bid_lines.push(header);
-    bid_lines.push(Line::from(Span::styled("  BIDS", Style::new().fg(GREEN).bold())));
+    bid_lines.push(Line::from(Span::styled(
+        "  BIDS",
+        Style::new().fg(GREEN).bold(),
+    )));
 
     // ── Layout: asks | spread | bids ────────────────────────────────────
-    let status = format!(
-        " Updates: {:.0}/s  │  q to quit ",
-        app.updates_per_sec()
-    );
+    let status = format!(" Updates: {:.0}/s  │  q to quit ", app.updates_per_sec());
 
     let outer = Block::default()
         .borders(Borders::ALL)
@@ -206,7 +209,9 @@ fn format_level<'a>(
 ) -> Line<'a> {
     let bar_len = if max_depth > 0.0 {
         #[allow(clippy::cast_sign_loss)]
-        { ((cumulative / max_depth) * BAR_WIDTH as f64).round() as usize }
+        {
+            ((cumulative / max_depth) * BAR_WIDTH as f64).round() as usize
+        }
     } else {
         0
     };

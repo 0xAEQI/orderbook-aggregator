@@ -30,22 +30,22 @@ const NUM_BUCKETS: usize = 16;
 /// 1-2-5 logarithmic progression from 100ns to 100ms — covers both
 /// sub-microsecond decode/merge and tail-latency spikes on e2e.
 const BUCKETS: [(u64, &str); NUM_BUCKETS] = [
-    (100, "0.0000001"),           // 100ns
-    (500, "0.0000005"),           // 500ns
-    (1_000, "0.000001"),          // 1μs
-    (5_000, "0.000005"),          // 5μs
-    (10_000, "0.00001"),          // 10μs
-    (25_000, "0.000025"),         // 25μs
-    (50_000, "0.00005"),          // 50μs
-    (100_000, "0.0001"),          // 100μs
-    (250_000, "0.00025"),         // 250μs
-    (500_000, "0.0005"),          // 500μs
-    (1_000_000, "0.001"),         // 1ms
-    (5_000_000, "0.005"),         // 5ms
-    (10_000_000, "0.01"),         // 10ms
-    (25_000_000, "0.025"),        // 25ms
-    (50_000_000, "0.05"),         // 50ms
-    (100_000_000, "0.1"),         // 100ms
+    (100, "0.0000001"),    // 100ns
+    (500, "0.0000005"),    // 500ns
+    (1_000, "0.000001"),   // 1μs
+    (5_000, "0.000005"),   // 5μs
+    (10_000, "0.00001"),   // 10μs
+    (25_000, "0.000025"),  // 25μs
+    (50_000, "0.00005"),   // 50μs
+    (100_000, "0.0001"),   // 100μs
+    (250_000, "0.00025"),  // 250μs
+    (500_000, "0.0005"),   // 500μs
+    (1_000_000, "0.001"),  // 1ms
+    (5_000_000, "0.005"),  // 5ms
+    (10_000_000, "0.01"),  // 10ms
+    (25_000_000, "0.025"), // 25ms
+    (50_000_000, "0.05"),  // 50ms
+    (100_000_000, "0.1"),  // 100ms
 ];
 
 pub struct PromHistogram {
@@ -373,4 +373,74 @@ async fn health(State(m): State<Arc<Metrics>>) -> (StatusCode, &'static str) {
 /// `GET /metrics` — Prometheus text exposition format.
 async fn prom_metrics(State(m): State<Arc<Metrics>>) -> String {
     m.to_prometheus()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn health_all_connected_ok() {
+        let metrics = Arc::new(Metrics::register(&["binance", "bitstamp"]));
+        metrics.exchange("binance").connected.store(true, Relaxed);
+        metrics.exchange("bitstamp").connected.store(true, Relaxed);
+
+        let (status, body) = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(health(State(metrics)));
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "OK\n");
+    }
+
+    #[test]
+    fn health_partial_degraded() {
+        let metrics = Arc::new(Metrics::register(&["binance", "bitstamp"]));
+        metrics.exchange("binance").connected.store(true, Relaxed);
+        // bitstamp remains disconnected (default false).
+
+        let (status, body) = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(health(State(metrics)));
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "DEGRADED\n");
+    }
+
+    #[test]
+    fn health_none_down() {
+        let metrics = Arc::new(Metrics::register(&["binance", "bitstamp"]));
+        // Both disconnected (default).
+
+        let (status, body) = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(health(State(metrics)));
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body, "DOWN\n");
+    }
+
+    #[test]
+    fn histogram_record_and_render() {
+        let h = PromHistogram::new();
+
+        // Record three known durations:
+        // 500ns → bucket index 1 (le=0.0000005)
+        // 5μs   → bucket index 3 (le=0.000005)
+        // 5μs   → bucket index 3 again
+        h.record(Duration::from_nanos(500));
+        h.record(Duration::from_micros(5));
+        h.record(Duration::from_micros(5));
+
+        let mut out = String::new();
+        h.render("test_hist", "", &mut out);
+
+        // Cumulative: bucket 0 (le=100ns) = 0, bucket 1 (le=500ns) = 1,
+        // bucket 2 (le=1μs) = 1, bucket 3 (le=5μs) = 3, ... all remaining = 3.
+        assert!(out.contains("test_hist_bucket{le=\"0.0000005\"} 1"));
+        assert!(out.contains("test_hist_bucket{le=\"0.000001\"} 1"));
+        assert!(out.contains("test_hist_bucket{le=\"0.000005\"} 3"));
+        assert!(out.contains("test_hist_bucket{le=\"+Inf\"} 3"));
+        assert!(out.contains("test_hist_count 3"));
+
+        // Sum = 500 + 5000 + 5000 = 10500 ns = 0.0000105 s
+        assert!(out.contains("test_hist_sum 0.0000105"));
+    }
 }

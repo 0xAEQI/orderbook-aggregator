@@ -7,9 +7,9 @@ use tonic::transport::Server;
 use tracing::info;
 
 use orderbook_aggregator::config::Config;
+use orderbook_aggregator::exchange::Exchange;
 use orderbook_aggregator::exchange::binance::Binance;
 use orderbook_aggregator::exchange::bitstamp::Bitstamp;
-use orderbook_aggregator::exchange::Exchange;
 use orderbook_aggregator::merger;
 
 /// Capacity of each per-exchange SPSC ring buffer. Small by design — for order
@@ -125,10 +125,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         #[cfg(unix)]
         {
-            let mut sigterm = tokio::signal::unix::signal(
-                tokio::signal::unix::SignalKind::terminate(),
-            )
-            .expect("failed to register SIGTERM handler");
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("failed to register SIGTERM handler");
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {},
                 _ = sigterm.recv() => {},

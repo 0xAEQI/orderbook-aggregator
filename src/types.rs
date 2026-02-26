@@ -23,7 +23,17 @@ pub const TOP_N: usize = 10;
 pub struct FixedPoint(u64);
 
 /// Powers of 10 for fractional digit padding (single multiply instead of loop).
-const POW10: [u64; 9] = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000];
+const POW10: [u64; 9] = [
+    1,
+    10,
+    100,
+    1_000,
+    10_000,
+    100_000,
+    1_000_000,
+    10_000_000,
+    100_000_000,
+];
 
 impl FixedPoint {
     pub const SCALE: u64 = 100_000_000; // 10^8
@@ -144,7 +154,10 @@ mod tests {
 
     #[test]
     fn parse_integer_only() {
-        assert_eq!(FixedPoint::parse("123").unwrap().raw(), 123 * FixedPoint::SCALE);
+        assert_eq!(
+            FixedPoint::parse("123").unwrap().raw(),
+            123 * FixedPoint::SCALE
+        );
     }
 
     #[test]
