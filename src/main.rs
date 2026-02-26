@@ -1,8 +1,3 @@
-//! Order Book Aggregator
-//!
-//! Connects to Binance and Bitstamp WebSocket feeds, merges their order books,
-//! and streams the top-10 bid/ask levels with spread via gRPC.
-
 use std::sync::Arc;
 
 use clap::Parser;
@@ -19,6 +14,20 @@ use orderbook_aggregator::server::{
 };
 use orderbook_aggregator::types::{self, Summary};
 use orderbook_aggregator::merger;
+
+fn spawn_exchange(
+    exchange: impl Exchange,
+    name: &'static str,
+    symbol: String,
+    tx: mpsc::Sender<types::OrderBook>,
+    cancel: CancellationToken,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        if let Err(e) = exchange.connect(symbol, tx, cancel).await {
+            tracing::error!(exchange = name, error = %e, "fatal error");
+        }
+    })
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -54,36 +63,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Watch channel for merger → gRPC server (latest-value semantics).
     let (summary_tx, summary_rx) = watch::channel(Summary::default());
 
-    // Spawn exchange WebSocket tasks.
-    // Each adapter gets its own Arc<ExchangeMetrics> — no field lookup on the hot path.
-    let binance = Binance {
-        metrics: metrics.exchange("binance"),
-    };
-    let bitstamp = Bitstamp {
-        metrics: metrics.exchange("bitstamp"),
-    };
-
-    let binance_handle = {
-        let symbol = config.symbol.clone();
-        let tx = book_tx.clone();
-        let cancel = cancel.clone();
-        tokio::spawn(async move {
-            if let Err(e) = binance.connect(symbol, tx, cancel).await {
-                tracing::error!(exchange = "binance", error = %e, "fatal error");
-            }
-        })
-    };
-
-    let bitstamp_handle = {
-        let symbol = config.symbol.clone();
-        let tx = book_tx.clone();
-        let cancel = cancel.clone();
-        tokio::spawn(async move {
-            if let Err(e) = bitstamp.connect(symbol, tx, cancel).await {
-                tracing::error!(exchange = "bitstamp", error = %e, "fatal error");
-            }
-        })
-    };
+    let binance_handle = spawn_exchange(
+        Binance { metrics: metrics.exchange("binance") },
+        "binance",
+        config.symbol.clone(),
+        book_tx.clone(),
+        cancel.clone(),
+    );
+    let bitstamp_handle = spawn_exchange(
+        Bitstamp { metrics: metrics.exchange("bitstamp") },
+        "bitstamp",
+        config.symbol.clone(),
+        book_tx.clone(),
+        cancel.clone(),
+    );
 
     // Drop the original sender so channel closes when exchanges stop.
     drop(book_tx);

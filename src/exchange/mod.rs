@@ -12,7 +12,7 @@
 pub mod binance;
 pub mod bitstamp;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arrayvec::ArrayVec;
 use tokio::sync::mpsc;
@@ -24,12 +24,8 @@ use crate::types::{FixedPoint, Level, MAX_LEVELS, OrderBook};
 /// Connection timeout for WebSocket handshake.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Trait implemented by each exchange adapter.
+/// Exchange adapter. Handles reconnection internally; respects cancellation.
 pub trait Exchange: Send + Sync + 'static {
-    /// Connect to the exchange WebSocket and stream order book updates.
-    ///
-    /// Implementations must handle reconnection internally and respect the
-    /// cancellation token for graceful shutdown.
     fn connect(
         &self,
         symbol: String,
@@ -38,7 +34,7 @@ pub trait Exchange: Send + Sync + 'static {
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 }
 
-/// WebSocket config optimized for low-latency reads.
+/// WebSocket config: `write_buffer_size: 0` for immediate frame flushing.
 #[must_use]
 pub fn ws_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
     tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
@@ -47,39 +43,38 @@ pub fn ws_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig 
     }
 }
 
-/// Parse borrowed string slices directly into fixed-point integers — no intermediate
-/// f64. Byte-scans each decimal string into `FixedPoint(u64)` with 10^8 scaling.
-/// Caps output at `MAX_LEVELS` — excess levels from the exchange are dropped.
+/// `[price, qty]` string pairs → `ArrayVec<Level>`. Returns `None` on any malformed pair.
 #[inline]
-pub fn parse_levels(exchange: &'static str, raw: &[[&str; 2]]) -> ArrayVec<Level, MAX_LEVELS> {
+fn parse_levels(exchange: &'static str, raw: &[[&str; 2]]) -> Option<ArrayVec<Level, MAX_LEVELS>> {
     let mut levels = ArrayVec::new();
     for &[price, amount] in raw {
-        match (FixedPoint::parse(price), FixedPoint::parse(amount)) {
-            (Some(p), Some(a)) => {
-                if levels.try_push(Level {
-                    exchange,
-                    price: p,
-                    amount: a,
-                }).is_err() {
-                    break; // At capacity — stop parsing.
-                }
-            }
-            _ => {
-                tracing::warn!(
-                    exchange,
-                    price,
-                    amount,
-                    "malformed price level — skipped"
-                );
-            }
+        let p = FixedPoint::parse(price)?;
+        let a = FixedPoint::parse(amount)?;
+        if levels.try_push(Level { exchange, price: p, amount: a }).is_err() {
+            break;
         }
     }
-    levels
+    Some(levels)
 }
 
-/// Try to send an order book snapshot to the merger, handling backpressure.
-///
-/// Returns `true` to continue, `false` if the channel is closed (caller should stop).
+/// Parse walker output into an `OrderBook`. Returns `None` if any level is malformed.
+#[inline]
+#[must_use]
+pub fn build_book(
+    exchange: &'static str,
+    bids: &[[&str; 2]],
+    asks: &[[&str; 2]],
+    decode_start: Instant,
+) -> Option<OrderBook> {
+    Some(OrderBook {
+        exchange,
+        bids: parse_levels(exchange, bids)?,
+        asks: parse_levels(exchange, asks)?,
+        decode_start,
+    })
+}
+
+/// Send book to merger. Drops on full (stale data). Returns `false` if channel closed.
 #[inline]
 pub fn try_send_book(
     sender: &mpsc::Sender<OrderBook>,
@@ -99,9 +94,7 @@ pub fn try_send_book(
     }
 }
 
-/// Exponential backoff with random jitter, cancellation-aware.
-///
-/// Returns `true` if the caller should continue reconnecting, `false` on cancellation.
+/// Exponential backoff with jitter. Returns `false` on cancellation.
 pub async fn backoff_sleep(
     backoff_ms: &mut u64,
     max_ms: u64,

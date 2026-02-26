@@ -44,13 +44,11 @@ struct Scanner<'a> {
 }
 
 impl<'a> Scanner<'a> {
-    /// Peek at the current byte without advancing.
     #[inline]
     fn peek(&self) -> Option<u8> {
         self.buf.get(self.pos).copied()
     }
 
-    /// Advance past whitespace (space, tab, newline, carriage return).
     #[inline]
     fn skip_ws(&mut self) {
         while self.pos < self.buf.len() {
@@ -61,7 +59,6 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    /// Consume a specific byte, returning `false` if it doesn't match.
     #[inline]
     fn expect(&mut self, byte: u8) -> bool {
         self.skip_ws();
@@ -73,35 +70,34 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    /// Read a JSON string value and return the content (between quotes) as `&str`.
-    ///
-    /// Input is `&str` (valid UTF-8 from WS text frame) and we return a subslice,
-    /// so the result is guaranteed valid UTF-8.
+    /// Extract the content of a JSON string value as a borrowed `&str`.
     #[inline]
     fn read_string(&mut self) -> Option<&'a str> {
         self.skip_ws();
         if self.pos >= self.buf.len() || self.buf[self.pos] != b'"' {
             return None;
         }
-        self.pos += 1; // skip opening quote
+        self.pos += 1;
         let start = self.pos;
         while self.pos < self.buf.len() {
             match self.buf[self.pos] {
                 b'"' => {
                     let s = &self.buf[start..self.pos];
-                    self.pos += 1; // skip closing quote
-                    // SAFETY: input is &str (valid UTF-8), we return a subslice.
+                    self.pos += 1;
+                    // SAFETY: `buf` originates from `&str::as_bytes()` (guaranteed UTF-8
+                    // by WebSocket text frame contract). `s` is a subslice of `buf`, so
+                    // it is valid UTF-8. Debug builds verify this invariant.
                     #[allow(unsafe_code)]
-                    return Some(unsafe { std::str::from_utf8_unchecked(s) });
+                    {
+                        debug_assert!(std::str::from_utf8(s).is_ok());
+                        return Some(unsafe { std::str::from_utf8_unchecked(s) });
+                    }
                 }
-                b'\\' => {
-                    // Skip escaped character (e.g. \", \\, \n).
-                    self.pos += 2;
-                }
+                b'\\' => self.pos += 2,
                 _ => self.pos += 1,
             }
         }
-        None // unterminated string
+        None
     }
 }
 
@@ -223,7 +219,7 @@ mod tests {
     // ── Binance ──────────────────────────────────────────────────────────
 
     #[test]
-    fn test_binance_happy_path() {
+    fn binance_happy_path() {
         let json = r#"{"lastUpdateId":123,"bids":[["0.06824","12.5"],["0.06823","8.3"],["0.06822","5.0"]],"asks":[["0.06825","10.0"],["0.06826","7.2"],["0.06827","3.5"]]}"#;
         let (bids, asks) = walk_binance(json).expect("valid JSON");
         assert_eq!(bids.len(), 3);
@@ -235,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn test_binance_unknown_fields() {
+    fn binance_unknown_fields() {
         // Extra fields before, between, and after bids/asks — all skipped by pattern seek.
         let json = r#"{"lastUpdateId":999,"E":1234567890,"bids":[["1.0","2.0"]],"extra":"value","asks":[["3.0","4.0"]],"trailing":true}"#;
         let (bids, asks) = walk_binance(json).expect("should skip unknown fields");
@@ -246,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn test_binance_empty_levels() {
+    fn binance_empty_levels() {
         let json = r#"{"bids":[],"asks":[]}"#;
         let (bids, asks) = walk_binance(json).expect("empty arrays are valid");
         assert!(bids.is_empty());
@@ -256,7 +252,7 @@ mod tests {
     // ── Bitstamp ─────────────────────────────────────────────────────────
 
     #[test]
-    fn test_bitstamp_data_event() {
+    fn bitstamp_data_event() {
         let json = r#"{
             "event": "data",
             "channel": "order_book_ethbtc",
@@ -276,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bitstamp_non_data_event() {
+    fn bitstamp_non_data_event() {
         let json = r#"{
             "event": "bts:subscription_succeeded",
             "channel": "order_book_ethbtc",
@@ -289,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bitstamp_level_capping() {
+    fn bitstamp_level_capping() {
         // 50 levels — should keep only MAX_LEVELS (20).
         let levels: Vec<String> = (0..50)
             .map(|i| format!("[\"{}.0\", \"1.0\"]", 100 + i))
@@ -307,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bitstamp_extra_fields_in_data() {
+    fn bitstamp_extra_fields_in_data() {
         // Extra fields in the data object — skipped by pattern seek.
         let json = r#"{"event":"data","channel":"order_book_ethbtc","data":{"timestamp":"1700000000","microtimestamp":"1700000000000000","bids":[["3.0","4.0"]],"asks":[["5.0","6.0"]]}}"#;
         let (event, bids, asks) = walk_bitstamp(json).expect("should skip extra data fields");
@@ -317,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn test_malformed_json_returns_none() {
+    fn malformed_json_returns_none() {
         assert!(walk_binance("").is_none());
         assert!(walk_binance("{").is_none());
         assert!(walk_binance(r#"{"bids": not_an_array}"#).is_none());

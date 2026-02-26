@@ -28,9 +28,9 @@ const POW10: [u64; 9] = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_0
 impl FixedPoint {
     pub const SCALE: u64 = 100_000_000; // 10^8
 
-    /// Parse a decimal string directly to fixed-point. No intermediate f64.
+    /// `"123.456"` → `FixedPoint(12345600000)`. No intermediate `f64`.
     ///
-    /// Accepts formats: "123", "0.06824000", "101.5", ".5"
+    /// Returns `None` on empty input, non-digit bytes, or overflow.
     #[inline]
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
@@ -41,8 +41,6 @@ impl FixedPoint {
 
         let mut i = 0;
         let mut int_part: u64 = 0;
-
-        // Integer part.
         while i < bytes.len() && bytes[i] != b'.' {
             let d = bytes[i].wrapping_sub(b'0');
             if d > 9 {
@@ -54,8 +52,6 @@ impl FixedPoint {
 
         let mut frac_part: u64 = 0;
         let mut frac_digits: u32 = 0;
-
-        // Fractional part (after '.').
         if i < bytes.len() && bytes[i] == b'.' {
             i += 1;
             while i < bytes.len() && frac_digits < 8 {
@@ -67,7 +63,6 @@ impl FixedPoint {
                 frac_digits += 1;
                 i += 1;
             }
-            // Skip remaining fractional digits beyond 8 (truncate, not round).
             while i < bytes.len() {
                 let d = bytes[i].wrapping_sub(b'0');
                 if d > 9 {
@@ -77,8 +72,6 @@ impl FixedPoint {
             }
         }
 
-        // Pad fractional part to 8 digits via lookup table (single multiply).
-        // e.g., "0.5" → frac_digits=1, frac_part=5, pad by 10^7 → 50_000_000
         frac_part *= POW10[(8 - frac_digits) as usize];
 
         let value = int_part.checked_mul(Self::SCALE)?.checked_add(frac_part)?;
@@ -116,43 +109,32 @@ impl fmt::Display for FixedPoint {
     }
 }
 
-/// A single price level from an exchange.
-///
-/// `Copy` by design — all fields are trivially copyable (`&'static str`,
-/// `FixedPoint`, `FixedPoint`), allowing zero-overhead moves through channels
-/// and merge buffers.
+/// A single price level from an exchange. `Copy` — no heap, no clone overhead.
 #[derive(Debug, Clone, Copy)]
 pub struct Level {
-    /// Source exchange name (e.g., `"binance"`, `"bitstamp"`).
     pub exchange: &'static str,
     pub price: FixedPoint,
     pub amount: FixedPoint,
 }
 
-/// Snapshot of one exchange's order book at a point in time.
+/// Single-exchange order book snapshot. Moved (not cloned) through `mpsc`.
 ///
-/// Produced by exchange adapters and sent to the merger via `mpsc` with move
-/// semantics — no cloning, no heap allocation.
+/// **Invariant**: bids sorted descending by price, asks ascending.
 #[derive(Debug, Clone)]
 pub struct OrderBook {
-    /// Source exchange name.
     pub exchange: &'static str,
-    /// Bids sorted highest price first (exchange-provided ordering).
     pub bids: ArrayVec<Level, MAX_LEVELS>,
-    /// Asks sorted lowest price first (exchange-provided ordering).
     pub asks: ArrayVec<Level, MAX_LEVELS>,
-    /// When the WebSocket frame was received — used for e2e latency measurement.
-    pub received_at: Instant,
+    /// When decode started (immediately after WS frame dispatch) — e2e latency anchor.
+    pub decode_start: Instant,
 }
 
-/// Merged top-of-book summary published to gRPC clients via `watch` channel.
+/// Merged top-of-book across all exchanges. Published via `watch` channel.
 #[derive(Debug, Clone, Default)]
 pub struct Summary {
     /// `best_ask - best_bid`. Zero if either side is empty.
     pub spread: f64,
-    /// Top 10 bids across all exchanges, highest price first.
     pub bids: ArrayVec<Level, TOP_N>,
-    /// Top 10 asks across all exchanges, lowest price first.
     pub asks: ArrayVec<Level, TOP_N>,
 }
 

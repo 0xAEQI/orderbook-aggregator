@@ -14,6 +14,7 @@ use std::time::Instant;
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async_tls_with_config;
+use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -69,46 +70,42 @@ impl Exchange for Binance {
                     let (_write, mut read) = ws_stream.split();
 
                     loop {
-                        tokio::select! {
+                        let text = tokio::select! {
                             _ = cancel.cancelled() => {
                                 info!(exchange = "binance", "shutting down");
                                 self.metrics.connected.store(false, Relaxed);
                                 return Ok(());
                             }
-                            msg = read.next() => {
-                                match msg {
-                                    Some(Ok(msg)) => {
-                                        if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
-                                            let t0 = Instant::now();
-                                            if let Some((bids, asks)) = walk_binance(&text) {
-                                                let book = OrderBook {
-                                                    exchange: "binance",
-                                                    bids: super::parse_levels("binance", &bids),
-                                                    asks: super::parse_levels("binance", &asks),
-                                                    received_at: t0,
-                                                };
-                                                self.metrics.decode_latency.record(t0.elapsed());
-                                                self.metrics.messages.fetch_add(1, Relaxed);
-                                                if !super::try_send_book(&sender, book, "binance") {
-                                                    return Ok(());
-                                                }
-                                            } else {
-                                                self.metrics.errors.fetch_add(1, Relaxed);
-                                                warn!(exchange = "binance", "parse error");
-                                            }
-                                        }
-                                    }
-                                    Some(Err(e)) => {
-                                        self.metrics.errors.fetch_add(1, Relaxed);
-                                        warn!(exchange = "binance", error = %e, "ws error");
-                                        break;
-                                    }
-                                    None => {
-                                        warn!(exchange = "binance", "stream ended");
-                                        break;
-                                    }
+                            msg = read.next() => match msg {
+                                Some(Ok(Message::Text(t))) => t,
+                                Some(Ok(_)) => continue,
+                                Some(Err(e)) => {
+                                    self.metrics.errors.fetch_add(1, Relaxed);
+                                    warn!(exchange = "binance", error = %e, "ws error");
+                                    break;
+                                }
+                                None => {
+                                    warn!(exchange = "binance", "stream ended");
+                                    break;
                                 }
                             }
+                        };
+
+                        let t0 = Instant::now();
+                        let Some((bids, asks)) = walk_binance(&text) else {
+                            self.metrics.errors.fetch_add(1, Relaxed);
+                            warn!(exchange = "binance", "parse error");
+                            continue;
+                        };
+                        let Some(book) = super::build_book("binance", &bids, &asks, t0) else {
+                            self.metrics.errors.fetch_add(1, Relaxed);
+                            warn!(exchange = "binance", "malformed level");
+                            continue;
+                        };
+                        self.metrics.decode_latency.record(t0.elapsed());
+                        self.metrics.messages.fetch_add(1, Relaxed);
+                        if !super::try_send_book(&sender, book, "binance") {
+                            return Ok(());
                         }
                     }
 
@@ -131,19 +128,11 @@ impl Exchange for Binance {
     }
 }
 
-/// Parse a raw Binance `depth20` JSON frame into an [`OrderBook`].
-///
-/// Wraps the custom byte walker + `FixedPoint::parse` pipeline so benchmarks
-/// can measure decode performance without accessing private types.
+/// Decode a Binance `depth20` JSON frame. For benchmarks.
 #[must_use]
 pub fn parse_depth_json(json: &str) -> Option<OrderBook> {
     let (bids, asks) = walk_binance(json)?;
-    Some(OrderBook {
-        exchange: "binance",
-        bids: super::parse_levels("binance", &bids),
-        asks: super::parse_levels("binance", &asks),
-        received_at: Instant::now(),
-    })
+    super::build_book("binance", &bids, &asks, Instant::now())
 }
 
 #[cfg(test)]
@@ -167,7 +156,7 @@ mod tests {
     }"#;
 
     #[test]
-    fn test_parse_binance_snapshot() {
+    fn parse_binance_snapshot() {
         let book = parse_depth_json(BINANCE_JSON).expect("valid JSON");
 
         assert_eq!(book.exchange, "binance");
@@ -190,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_binance_ignores_unknown_fields() {
+    fn parse_binance_ignores_unknown_fields() {
         // Binance may add fields; walker should skip them.
         let json = r#"{
             "lastUpdateId": 999,

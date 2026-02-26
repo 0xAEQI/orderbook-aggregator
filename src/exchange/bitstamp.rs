@@ -43,6 +43,9 @@ impl Exchange for Bitstamp {
         cancel: CancellationToken,
     ) -> Result<()> {
         let channel = format!("order_book_{}", symbol.to_lowercase());
+        let subscribe_msg = format!(
+            r#"{{"event":"bts:subscribe","data":{{"channel":"{channel}"}}}}"#
+        );
         let ws_config = super::ws_config();
         let mut backoff_ms = 1000u64;
 
@@ -67,12 +70,7 @@ impl Exchange for Bitstamp {
 
                     let (mut write, mut read) = ws_stream.split();
 
-                    // Subscribe to order book channel.
-                    let subscribe = format!(
-                        r#"{{"event":"bts:subscribe","data":{{"channel":"{channel}"}}}}"#
-                    );
-
-                    if let Err(e) = write.send(Message::Text(subscribe)).await {
+                    if let Err(e) = write.send(Message::Text(subscribe_msg.clone())).await {
                         self.metrics.errors.fetch_add(1, Relaxed);
                         error!(exchange = "bitstamp", error = %e, "subscribe failed");
                         self.metrics.connected.store(false, Relaxed);
@@ -82,64 +80,57 @@ impl Exchange for Bitstamp {
                     info!(exchange = "bitstamp", %channel, "subscribed");
 
                     loop {
-                        tokio::select! {
+                        let text = tokio::select! {
                             _ = cancel.cancelled() => {
                                 info!(exchange = "bitstamp", "shutting down");
                                 self.metrics.connected.store(false, Relaxed);
                                 return Ok(());
                             }
-                            msg = read.next() => {
-                                match msg {
-                                    Some(Ok(Message::Text(text))) => {
-                                        let t0 = Instant::now();
-                                        if let Some((event, bids, asks)) = walk_bitstamp(&text) {
-                                            match event {
-                                                "data" => {
-                                                    let book = OrderBook {
-                                                        exchange: "bitstamp",
-                                                        bids: super::parse_levels("bitstamp", &bids),
-                                                        asks: super::parse_levels("bitstamp", &asks),
-                                                        received_at: t0,
-                                                    };
-                                                    self.metrics.decode_latency.record(t0.elapsed());
-                                                    self.metrics.messages.fetch_add(1, Relaxed);
-                                                    if !super::try_send_book(&sender, book, "bitstamp") {
-                                                        return Ok(());
-                                                    }
-                                                }
-                                                "bts:subscription_succeeded" => {
-                                                    info!(exchange = "bitstamp", "subscription confirmed");
-                                                }
-                                                "bts:error" => {
-                                                    self.metrics.errors.fetch_add(1, Relaxed);
-                                                    let msg = crate::json_walker::extract_string(&text, b"\"message\":")
-                                                        .unwrap_or("unknown");
-                                                    error!(
-                                                        exchange = "bitstamp",
-                                                        message = msg,
-                                                        "server error"
-                                                    );
-                                                    break;
-                                                }
-                                                _ => {}
-                                            }
-                                        } else {
-                                            self.metrics.errors.fetch_add(1, Relaxed);
-                                            warn!(exchange = "bitstamp", "parse error");
-                                        }
-                                    }
-                                    Some(Ok(_)) => {} // Ping/Pong/Binary — ignore.
-                                    Some(Err(e)) => {
-                                        self.metrics.errors.fetch_add(1, Relaxed);
-                                        warn!(exchange = "bitstamp", error = %e, "ws error");
-                                        break;
-                                    }
-                                    None => {
-                                        warn!(exchange = "bitstamp", "stream ended");
-                                        break;
-                                    }
+                            msg = read.next() => match msg {
+                                Some(Ok(Message::Text(t))) => t,
+                                Some(Ok(_)) => continue,
+                                Some(Err(e)) => {
+                                    self.metrics.errors.fetch_add(1, Relaxed);
+                                    warn!(exchange = "bitstamp", error = %e, "ws error");
+                                    break;
+                                }
+                                None => {
+                                    warn!(exchange = "bitstamp", "stream ended");
+                                    break;
                                 }
                             }
+                        };
+
+                        let t0 = Instant::now();
+                        let Some((event, bids, asks)) = walk_bitstamp(&text) else {
+                            self.metrics.errors.fetch_add(1, Relaxed);
+                            warn!(exchange = "bitstamp", "parse error");
+                            continue;
+                        };
+                        match event {
+                            "data" => {
+                                let Some(book) = super::build_book("bitstamp", &bids, &asks, t0) else {
+                                    self.metrics.errors.fetch_add(1, Relaxed);
+                                    warn!(exchange = "bitstamp", "malformed level");
+                                    continue;
+                                };
+                                self.metrics.decode_latency.record(t0.elapsed());
+                                self.metrics.messages.fetch_add(1, Relaxed);
+                                if !super::try_send_book(&sender, book, "bitstamp") {
+                                    return Ok(());
+                                }
+                            }
+                            "bts:subscription_succeeded" => {
+                                info!(exchange = "bitstamp", "subscription confirmed");
+                            }
+                            "bts:error" => {
+                                self.metrics.errors.fetch_add(1, Relaxed);
+                                let msg = crate::json_walker::extract_string(&text, b"\"message\":")
+                                    .unwrap_or("unknown");
+                                error!(exchange = "bitstamp", message = msg, "server error");
+                                break;
+                            }
+                            _ => {}
                         }
                     }
 
@@ -162,23 +153,14 @@ impl Exchange for Bitstamp {
     }
 }
 
-/// Parse a raw Bitstamp `order_book` JSON message into an [`OrderBook`].
-///
-/// Wraps the custom byte walker + `FixedPoint::parse` pipeline so benchmarks
-/// can measure decode performance without accessing private types.
-/// Returns `None` for non-data events (e.g. subscription confirmations).
+/// Decode a Bitstamp `order_book` JSON message. Returns `None` for non-data events.
 #[must_use]
 pub fn parse_order_book_json(json: &str) -> Option<OrderBook> {
     let (event, bids, asks) = walk_bitstamp(json)?;
     if event != "data" {
         return None;
     }
-    Some(OrderBook {
-        exchange: "bitstamp",
-        bids: super::parse_levels("bitstamp", &bids),
-        asks: super::parse_levels("bitstamp", &asks),
-        received_at: Instant::now(),
-    })
+    super::build_book("bitstamp", &bids, &asks, Instant::now())
 }
 
 #[cfg(test)]
@@ -207,7 +189,7 @@ mod tests {
     }"#;
 
     #[test]
-    fn test_parse_bitstamp_data_message() {
+    fn parse_bitstamp_data_message() {
         let book = parse_order_book_json(BITSTAMP_JSON).expect("valid data message");
 
         assert_eq!(book.exchange, "bitstamp");
@@ -221,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_bitstamp_non_data_event() {
+    fn parse_bitstamp_non_data_event() {
         let json = r#"{
             "event": "bts:subscription_succeeded",
             "channel": "order_book_ethbtc",
@@ -232,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn test_level_capping_at_max() {
+    fn level_capping_at_max() {
         // Build a JSON array with 50 levels — more than MAX_LEVELS (20).
         let levels: Vec<String> = (0..50)
             .map(|i| format!("[\"{}.0\", \"1.0\"]", 100 + i))

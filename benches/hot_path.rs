@@ -63,7 +63,7 @@ fn make_book(exchange: &'static str, base_bid: f64, base_ask: f64, n: usize) -> 
                 amount: FixedPoint::from_f64(8.0 - (i % 6) as f64),
             })
             .collect(),
-        received_at: Instant::now(),
+        decode_start: Instant::now(),
     }
 }
 

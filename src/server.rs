@@ -20,9 +20,6 @@ pub mod proto {
 use proto::orderbook_aggregator_server::OrderbookAggregator;
 
 /// gRPC service backed by a `watch` channel from the merger.
-///
-/// Each `BookSummary` call clones the receiver, so multiple clients share the
-/// same underlying data with zero additional cost on the merger side.
 pub struct OrderbookService {
     summary_rx: watch::Receiver<Summary>,
 }
@@ -52,28 +49,16 @@ impl OrderbookAggregator for OrderbookService {
     }
 }
 
-/// Convert internal `Summary` (stack-allocated `ArrayVec`) to Protobuf types
-/// (heap-allocated `Vec<Level>` + `String`). Runs on the gRPC handler task.
+/// `Summary` → proto. Heap allocation here, not in the merger.
 fn to_proto(summary: Summary) -> proto::Summary {
+    let cvt = |l: crate::types::Level| proto::Level {
+        exchange: l.exchange.to_string(),
+        price: l.price.to_f64(),
+        amount: l.amount.to_f64(),
+    };
     proto::Summary {
         spread: summary.spread,
-        bids: summary
-            .bids
-            .into_iter()
-            .map(|l| proto::Level {
-                exchange: l.exchange.to_string(),
-                price: l.price.to_f64(),
-                amount: l.amount.to_f64(),
-            })
-            .collect(),
-        asks: summary
-            .asks
-            .into_iter()
-            .map(|l| proto::Level {
-                exchange: l.exchange.to_string(),
-                price: l.price.to_f64(),
-                amount: l.amount.to_f64(),
-            })
-            .collect(),
+        bids: summary.bids.into_iter().map(cvt).collect(),
+        asks: summary.asks.into_iter().map(cvt).collect(),
     }
 }

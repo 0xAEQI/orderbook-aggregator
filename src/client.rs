@@ -11,6 +11,7 @@
 
 use std::time::Instant;
 
+use arrayvec::ArrayVec;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     layout::{Alignment, Constraint, Layout},
@@ -70,6 +71,7 @@ impl Drop for TermGuard {
 
 // ── Rendering ───────────────────────────────────────────────────────────────
 
+const MAX_DISPLAY: usize = 10;
 const RED: Color = Color::Rgb(235, 87, 87);
 const GREEN: Color = Color::Rgb(81, 207, 102);
 const YELLOW: Color = Color::Rgb(229, 192, 72);
@@ -90,26 +92,26 @@ fn render(frame: &mut Frame, app: &App) {
         return;
     };
 
-    // Compute cumulative depth per side (for bars and TOTAL column).
-    // Depth grows outward from spread: best level = its own amount, each
-    // level further out adds more. Creates a funnel shape in the bars.
-    let ask_cumulative: Vec<f64> = {
-        // summary.asks is best-first (lowest price). Cumulate best → worst,
-        // then reverse for display order (worst/highest price at top).
-        let mut cum = Vec::with_capacity(summary.asks.len());
+    // Cumulative depth per side — stack-allocated, no per-frame heap alloc.
+    let ask_cumulative: ArrayVec<f64, MAX_DISPLAY> = {
+        let mut cum: ArrayVec<f64, MAX_DISPLAY> = ArrayVec::new();
         let mut total = 0.0;
         for level in &summary.asks {
             total += level.amount;
-            cum.push(total);
+            let _ = cum.try_push(total);
         }
-        cum.into_iter().rev().collect()
+        let mut reversed: ArrayVec<f64, MAX_DISPLAY> = ArrayVec::new();
+        for &v in cum.iter().rev() {
+            let _ = reversed.try_push(v);
+        }
+        reversed
     };
-    let bid_cumulative: Vec<f64> = {
-        let mut cum = Vec::with_capacity(summary.bids.len());
+    let bid_cumulative: ArrayVec<f64, MAX_DISPLAY> = {
+        let mut cum: ArrayVec<f64, MAX_DISPLAY> = ArrayVec::new();
         let mut total = 0.0;
         for level in &summary.bids {
             total += level.amount;
-            cum.push(total);
+            let _ = cum.try_push(total);
         }
         cum
     };

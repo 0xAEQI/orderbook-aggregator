@@ -88,7 +88,7 @@ async fn grpc_streams_merged_summary() {
             }]
             .into_iter()
             .collect(),
-            received_at: Instant::now(),
+            decode_start: Instant::now(),
         })
         .await
         .unwrap();
@@ -110,7 +110,7 @@ async fn grpc_streams_merged_summary() {
             }]
             .into_iter()
             .collect(),
-            received_at: Instant::now(),
+            decode_start: Instant::now(),
         })
         .await
         .unwrap();

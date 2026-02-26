@@ -25,11 +25,9 @@ use crate::types::{Level, OrderBook, Summary, TOP_N};
 /// Number of exchanges (Binance + Bitstamp). Sizes stack-allocated arrays.
 const MAX_EXCHANGES: usize = 2;
 
-/// Fixed-size exchange book store — avoids `HashMap` hashing and heap allocation.
-/// With only 2 exchanges, a linear scan for name→index is faster than hashing.
+/// Latest book per exchange. Fixed-size array, linear scan — no `HashMap`.
 pub struct BookStore {
     books: [Option<OrderBook>; MAX_EXCHANGES],
-    /// Maps exchange name → slot index. Grows on first insert, never shrinks.
     names: [&'static str; MAX_EXCHANGES],
     len: usize,
 }
@@ -50,18 +48,15 @@ impl BookStore {
         }
     }
 
-    /// Insert or update a book for the given exchange.
     #[inline]
     pub fn insert(&mut self, book: OrderBook) {
         let name = book.exchange;
-        // Linear scan — with k=2, this is 1-2 comparisons (faster than hashing).
         for i in 0..self.len {
             if self.names[i] == name {
                 self.books[i] = Some(book);
                 return;
             }
         }
-        // New exchange — add to the end.
         if self.len < MAX_EXCHANGES {
             self.names[self.len] = name;
             self.books[self.len] = Some(book);
@@ -69,7 +64,6 @@ impl BookStore {
         }
     }
 
-    /// Iterate over populated books.
     #[inline]
     fn iter(&self) -> impl Iterator<Item = &OrderBook> {
         self.books[..self.len].iter().filter_map(|b| b.as_ref())
@@ -98,7 +92,7 @@ pub async fn run(
                     info!("mpsc channel closed");
                     return;
                 };
-                let received_at = book.received_at;
+                let decode_start = book.decode_start;
                 books.insert(book);
                 let t0 = Instant::now();
                 let summary = merge(&books);
@@ -112,19 +106,13 @@ pub async fn run(
                 );
                 let _ = summary_tx.send(summary);
                 // e2e: WS frame received → merged summary published.
-                metrics.e2e_latency.record(received_at.elapsed());
+                metrics.e2e_latency.record(decode_start.elapsed());
             }
         }
     }
 }
 
-/// K-way merge of pre-sorted slices, taking only the top `n` elements.
-///
-/// Each exchange's order book arrives pre-sorted from the exchange. Instead of
-/// concatenating all levels and sorting O(m log m), we maintain a cursor per
-/// exchange and pick the best head at each step: O(n × k) total comparisons.
-///
-/// Fully stack-allocated — zero heap allocation.
+/// K-way merge of pre-sorted slices → top `n`. O(n × k) comparisons, zero alloc.
 #[inline]
 fn merge_top_n(
     slices: &[&[Level]],
@@ -161,7 +149,6 @@ fn merge_top_n(
 #[inline]
 #[must_use]
 pub fn merge(books: &BookStore) -> Summary {
-    // Stack-allocated slice collectors — no heap alloc.
     let mut bid_slices = [&[][..]; MAX_EXCHANGES];
     let mut ask_slices = [&[][..]; MAX_EXCHANGES];
     let mut k = 0;
@@ -215,12 +202,12 @@ mod tests {
             exchange,
             bids: bids.iter().copied().collect(),
             asks: asks.iter().copied().collect(),
-            received_at: Instant::now(),
+            decode_start: Instant::now(),
         }
     }
 
     #[test]
-    fn test_merge_two_exchanges() {
+    fn merge_two_exchanges() {
         let mut books = BookStore::new();
 
         books.insert(book(
@@ -254,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_truncates_to_top_10() {
+    fn merge_truncates_to_top_10() {
         let mut books = BookStore::new();
 
         let many_bids: ArrayVec<Level, { crate::types::MAX_LEVELS }> = (0..15)
@@ -268,7 +255,7 @@ mod tests {
             exchange: "binance",
             bids: many_bids,
             asks: many_asks,
-            received_at: Instant::now(),
+            decode_start: Instant::now(),
         });
 
         let summary = merge(&books);
@@ -277,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_empty() {
+    fn merge_empty() {
         let books = BookStore::new();
 
         let summary = merge(&books);
@@ -287,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bid_tiebreak_by_amount_across_exchanges() {
+    fn bid_tiebreak_by_amount() {
         let mut books = BookStore::new();
 
         // Same price from two exchanges — larger amount should come first.
@@ -300,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn test_single_exchange_only() {
+    fn single_exchange_only() {
         let mut books = BookStore::new();
 
         // Only one exchange connected — common during startup and reconnection.
@@ -319,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn test_crossed_book_negative_spread() {
+    fn crossed_book_negative_spread() {
         let mut books = BookStore::new();
 
         // Exchange A's best bid (102) exceeds Exchange B's best ask (101) — crossed book.
@@ -344,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ask_tiebreak_by_amount_across_exchanges() {
+    fn ask_tiebreak_by_amount() {
         let mut books = BookStore::new();
 
         // Same ask price from two exchanges — larger amount should come first.
@@ -357,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn test_kway_merge_interleaves_correctly() {
+    fn kway_merge_interleaves() {
         let mut books = BookStore::new();
 
         // Binance: 100, 98, 96   Bitstamp: 99, 97, 95
