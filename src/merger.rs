@@ -99,7 +99,6 @@ impl BookStore {
     }
 }
 
-
 /// Runs the merger on a dedicated OS thread. Spin-polls SPSC ring buffers,
 /// merges, and publishes via `watch` (sync send — no tokio runtime needed).
 ///
@@ -139,21 +138,18 @@ pub fn run_spsc(
             break;
         }
 
-        let mut got_any = false;
-        let mut latest_decode_start = Instant::now();
-
         // Drain all available snapshots before merging. If both exchanges pushed
         // in the same spin cycle, we merge once with the freshest data from each
         // instead of merging twice (first with stale data from the other).
+        let mut latest_decode_start: Option<Instant> = None;
         for consumer in &mut consumers {
             while let Ok(book) = consumer.pop() {
-                got_any = true;
-                latest_decode_start = book.decode_start;
+                latest_decode_start = Some(book.decode_start);
                 books.insert(book);
             }
         }
 
-        if got_any {
+        if let Some(decode_start) = latest_decode_start {
             let t0 = Instant::now();
             books.evict_stale(t0, STALE_THRESHOLD);
             let summary = merge(&books);
@@ -166,7 +162,7 @@ pub fn run_spsc(
                 "merged"
             );
             let _ = summary_tx.send(summary);
-            metrics.e2e_latency.record(latest_decode_start.elapsed());
+            metrics.e2e_latency.record(decode_start.elapsed());
         } else {
             core::hint::spin_loop();
         }

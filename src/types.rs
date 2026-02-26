@@ -117,7 +117,7 @@ pub struct Level {
     pub amount: FixedPoint,
 }
 
-/// Single-exchange order book snapshot. Moved (not cloned) through `mpsc`.
+/// Single-exchange order book snapshot. Moved through the SPSC ring buffer.
 ///
 /// **Invariant**: bids sorted descending by price, asks ascending.
 #[derive(Debug, Clone)]

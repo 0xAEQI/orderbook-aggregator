@@ -14,7 +14,7 @@ use orderbook_aggregator::merger;
 
 /// Capacity of each per-exchange SPSC ring buffer. Small by design — for order
 /// book data only the latest snapshot matters. A small ring ensures the merger
-/// processes fresh data after any delay, instead of draining 64 stale snapshots.
+/// processes fresh data after any delay, instead of draining dozens of stale ones.
 const RING_BUFFER_CAPACITY: usize = 4;
 use orderbook_aggregator::metrics::{self, Metrics};
 use orderbook_aggregator::server::{
