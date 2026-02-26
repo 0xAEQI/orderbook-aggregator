@@ -54,7 +54,7 @@ The `rust_decimal` crate would give arbitrary precision but requires 128-bit ope
 
 The custom walker skips all of this. It uses `memmem::Finder` objects (precompiled SIMD patterns) to jump directly to `"bids":` and `"asks":` -- bypassing envelope fields entirely. Price/quantity strings are borrowed as `&str` slices (zero-copy). The walker keeps the first 20 levels and stops -- no drain loop for the remaining 80.
 
-**Result**: ~1.85μs decode vs ~3-4μs with simd-json+serde for equivalent payloads.
+**Result**: ~1.94μs decode vs ~3-4μs with simd-json+serde for equivalent payloads.
 
 **Tradeoff**: Each exchange has its own ~15-line `walk()` function matching its specific wire format, co-located with its WebSocket adapter. Adding a new exchange means writing a new walker in the adapter module -- a series of `seek() + read_*()` calls using shared `Scanner` utilities from `json_walker.rs`. The pattern is well-established and self-contained.
 

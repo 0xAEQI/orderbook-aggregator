@@ -277,11 +277,151 @@
       }
     },
     {
+      "title": "E2E P50 (avg)",
+      "description": "Average median e2e latency over the dashboard time range",
+      "type": "stat",
+      "id": 24,
+      "gridPos": { "h": 3, "w": 6, "x": 0, "y": 9 },
+      "targets": [
+        {
+          "expr": "avg_over_time(histogram_quantile(0.50, sum(rate(orderbook_e2e_duration_seconds_bucket[$__rate_interval])) by (le))[$__range:])",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#73BF69", "value": null },
+              { "color": "#FADE2A", "value": 0.0001 },
+              { "color": "#F2495C", "value": 0.001 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "textMode": "auto",
+        "colorMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "title": "E2E P95 (avg)",
+      "description": "Average P95 e2e latency over the dashboard time range",
+      "type": "stat",
+      "id": 25,
+      "gridPos": { "h": 3, "w": 6, "x": 6, "y": 9 },
+      "targets": [
+        {
+          "expr": "avg_over_time(histogram_quantile(0.95, sum(rate(orderbook_e2e_duration_seconds_bucket[$__rate_interval])) by (le))[$__range:])",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#73BF69", "value": null },
+              { "color": "#FADE2A", "value": 0.0001 },
+              { "color": "#F2495C", "value": 0.001 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "textMode": "auto",
+        "colorMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "title": "E2E P99 (avg)",
+      "description": "Average P99 e2e latency over the dashboard time range",
+      "type": "stat",
+      "id": 26,
+      "gridPos": { "h": 3, "w": 6, "x": 12, "y": 9 },
+      "targets": [
+        {
+          "expr": "avg_over_time(histogram_quantile(0.99, sum(rate(orderbook_e2e_duration_seconds_bucket[$__rate_interval])) by (le))[$__range:])",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#73BF69", "value": null },
+              { "color": "#FADE2A", "value": 0.0001 },
+              { "color": "#F2495C", "value": 0.001 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "textMode": "auto",
+        "colorMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "title": "E2E P99.9 (avg)",
+      "description": "Average P99.9 e2e latency over the dashboard time range",
+      "type": "stat",
+      "id": 27,
+      "gridPos": { "h": 3, "w": 6, "x": 18, "y": 9 },
+      "targets": [
+        {
+          "expr": "avg_over_time(histogram_quantile(0.999, sum(rate(orderbook_e2e_duration_seconds_bucket[$__rate_interval])) by (le))[$__range:])",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#73BF69", "value": null },
+              { "color": "#FADE2A", "value": 0.0005 },
+              { "color": "#F2495C", "value": 0.005 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "textMode": "auto",
+        "colorMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
       "title": "E2E Latency -- P50 / P95 / P99 / P99.9",
       "description": "End-to-end latency from WebSocket receive to merged orderbook publish. Dashed lines at 1ms (warning) and 10ms (critical).",
       "type": "timeseries",
       "id": 6,
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
       "targets": [
         {
           "expr": "histogram_quantile(0.50, sum(rate(orderbook_e2e_duration_seconds_bucket[$__rate_interval])) by (le))",
@@ -355,7 +495,7 @@
       "description": "Heatmap showing observation density across latency buckets over time. Brighter = more observations.",
       "type": "heatmap",
       "id": 7,
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
       "targets": [
         {
           "expr": "sum(increase(orderbook_e2e_duration_seconds_bucket[$__rate_interval])) by (le)",
@@ -390,7 +530,7 @@
     {
       "type": "row",
       "title": "Throughput",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 },
       "collapsed": false,
       "id": 102
     },
@@ -398,7 +538,7 @@
       "title": "Messages / sec (by exchange)",
       "type": "timeseries",
       "id": 8,
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 21 },
       "targets": [
         {
           "expr": "rate(orderbook_messages_total[$__rate_interval])",
@@ -419,7 +559,7 @@
       "description": "Total WebSocket reconnection attempts per exchange. Non-zero indicates network instability or exchange-side disconnects.",
       "type": "stat",
       "id": 9,
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 18 },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 21 },
       "targets": [
         {
           "expr": "orderbook_reconnections_total",
@@ -453,7 +593,7 @@
       "description": "Total parse/connection errors per exchange. Includes parse failures, malformed levels, sequence gaps, and connection errors.",
       "type": "stat",
       "id": 14,
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 18 },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 21 },
       "targets": [
         {
           "expr": "orderbook_errors_total",
@@ -486,7 +626,7 @@
     {
       "type": "row",
       "title": "Decode Latency",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 29 },
       "collapsed": false,
       "id": 103
     },
@@ -495,7 +635,7 @@
       "description": "JSON decode + parse latency per exchange. Dashed lines at 1ms (warning) and 10ms (critical).",
       "type": "timeseries",
       "id": 10,
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 30 },
       "targets": [
         {
           "expr": "histogram_quantile(0.50, sum(rate(orderbook_decode_duration_seconds_bucket[$__rate_interval])) by (le, exchange))",
@@ -569,7 +709,7 @@
       "description": "Heatmap of decode latency distribution across all exchanges.",
       "type": "heatmap",
       "id": 11,
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 27 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 30 },
       "targets": [
         {
           "expr": "sum(increase(orderbook_decode_duration_seconds_bucket[$__rate_interval])) by (le)",
@@ -604,7 +744,7 @@
     {
       "type": "row",
       "title": "Merge Latency",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 38 },
       "collapsed": false,
       "id": 104
     },
@@ -613,7 +753,7 @@
       "description": "Order book k-way merge latency. Dashed lines at 1ms (warning) and 10ms (critical).",
       "type": "timeseries",
       "id": 12,
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 39 },
       "targets": [
         {
           "expr": "histogram_quantile(0.50, sum(rate(orderbook_merge_duration_seconds_bucket[$__rate_interval])) by (le))",
@@ -687,7 +827,7 @@
       "description": "Heatmap of merge latency distribution over time.",
       "type": "heatmap",
       "id": 13,
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 39 },
       "targets": [
         {
           "expr": "sum(increase(orderbook_merge_duration_seconds_bucket[$__rate_interval])) by (le)",

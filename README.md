@@ -6,6 +6,8 @@ Real-time order book aggregator that connects to **Binance** and **Bitstamp** We
 
 Built for latency: **6μs P50, sub-20μs P99** end-to-end (WS frame received → merged summary published). Zero-allocation hot path, SIMD-accelerated JSON parsing, dedicated OS threads with core pinning, and a busy-poll merger.
 
+![TUI Demo](docs/tui-demo.gif)
+
 ## Documentation
 
 | Document | Description |
@@ -14,7 +16,7 @@ Built for latency: **6μs P50, sub-20μs P99** end-to-end (WS frame received →
 | [Benchmarks](docs/BENCHMARKS.md) | Criterion results, production latency, hardware sensitivity, how to reproduce |
 | [Design Tradeoffs](docs/TRADEOFFS.md) | Every major decision with alternatives considered and rationale |
 | [Monitoring](docs/MONITORING.md) | Prometheus metrics, Grafana dashboard, health endpoint |
-| [Testing](docs/TESTING.md) | 52-test suite, coverage breakdown, CI |
+| [Testing](docs/TESTING.md) | 53-test suite, coverage breakdown, CI |
 
 ## Quick Start
 
@@ -75,9 +77,9 @@ See [docs/MONITORING.md](docs/MONITORING.md) for the full metrics table and dash
 
 | Stage | Latency | Method |
 |-------|---------|--------|
-| JSON decode (20 levels) | 1.85 μs | SIMD byte walker (`memchr::memmem`) + `FixedPoint::parse` |
-| Merge (2×20 → top 10) | 223 ns | K-way merge with stack-allocated cursors |
-| E2E (parse + merge) | 3.34 μs | Criterion benchmark, synthetic data |
+| JSON decode (20 levels) | 1.94 μs | Per-exchange SIMD byte walker (`memchr::memmem`) + `FixedPoint::parse` |
+| Merge (2×20 → top 10) | 245 ns | K-way merge with stack-allocated cursors |
+| E2E (parse + merge) | 3.72 μs | Criterion benchmark, synthetic data |
 | **Production E2E P50** | **6 μs** | Live exchange data |
 | **Production E2E P99** | **< 20 μs** | Live exchange data |
 
@@ -119,7 +121,7 @@ src/
   client.rs            Ratatui TUI client
   error.rs             Error types (thiserror)
   exchange/
-    mod.rs             Exchange trait, shared utilities (parse, backoff, SPSC push)
+    mod.rs             WsHandler trait, shared reconnection loop, utilities
     binance.rs         Binance depth20@100ms SIMD byte walker + WebSocket adapter
     bitstamp.rs        Bitstamp order_book SIMD byte walker + WebSocket adapter
 proto/
