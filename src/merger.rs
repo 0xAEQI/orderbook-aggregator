@@ -33,6 +33,11 @@ const MAX_EXCHANGES: usize = 2;
 /// one exchange contaminating the merged output after a disconnect. A crossed
 /// book (negative spread) from 5-second-old data is worse than a single-exchange
 /// book from fresh data.
+///
+/// 5s tolerates brief network jitter and reconnection delays while remaining
+/// well under the threshold where stale prices create false arbitrage signals.
+/// At Binance's 100ms update cadence, 5s ≈ 50 missed snapshots — clearly a
+/// disconnect, not transient jitter.
 const STALE_THRESHOLD: Duration = Duration::from_secs(5);
 
 /// Latest book per exchange. Fixed-size array, linear scan — no `HashMap`.
@@ -112,14 +117,16 @@ pub fn run_spsc(
     // Pin to the last available core — isolates the merger from exchange threads
     // and tokio workers which naturally spread across the remaining cores.
     // With Docker `cpuset`, this pins to the last core in the allowed set.
-    if let Some(cores) = core_affinity::get_core_ids()
-        && let Some(&core) = cores.last()
-    {
-        if core_affinity::set_for_current(core) {
-            info!(core_id = core.id, "merger pinned to core");
-        } else {
-            warn!("failed to pin merger to core");
+    match core_affinity::get_core_ids() {
+        Some(cores) if !cores.is_empty() => {
+            let core = *cores.last().unwrap();
+            if core_affinity::set_for_current(core) {
+                info!(core_id = core.id, "merger pinned to core");
+            } else {
+                warn!("failed to pin merger to core");
+            }
         }
+        _ => warn!("could not determine available cores; merger running unpinned"),
     }
 
     let mut books = BookStore::new();

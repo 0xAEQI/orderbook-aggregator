@@ -169,9 +169,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = http_handle.await;
 
     // Join OS threads (should already be exiting due to cancellation).
-    let _ = binance_thread.join();
-    let _ = bitstamp_thread.join();
-    let _ = merger_thread.join();
+    if binance_thread.join().is_err() {
+        tracing::warn!("binance thread panicked");
+    }
+    if bitstamp_thread.join().is_err() {
+        tracing::warn!("bitstamp thread panicked");
+    }
+    if merger_thread.join().is_err() {
+        tracing::warn!("merger thread panicked");
+    }
 
     info!("shutdown complete");
     Ok(())

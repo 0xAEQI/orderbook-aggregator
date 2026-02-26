@@ -32,3 +32,33 @@ pub struct Config {
     #[arg(short = 'm', long, default_value = "9090")]
     pub metrics_port: u16,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_symbol_normalizes_to_lowercase() {
+        assert_eq!(validate_symbol("ETHBTC").unwrap(), "ethbtc");
+        assert_eq!(validate_symbol("EthBtc").unwrap(), "ethbtc");
+    }
+
+    #[test]
+    fn validate_symbol_rejects_empty() {
+        assert!(validate_symbol("").is_err());
+    }
+
+    #[test]
+    fn validate_symbol_rejects_special_chars() {
+        assert!(validate_symbol("eth-btc").is_err());
+        assert!(validate_symbol("eth/btc").is_err());
+        assert!(validate_symbol("eth btc").is_err());
+    }
+
+    #[test]
+    fn validate_symbol_accepts_alphanumeric() {
+        assert!(validate_symbol("ethbtc").is_ok());
+        assert!(validate_symbol("btcusdt").is_ok());
+        assert!(validate_symbol("abc123").is_ok());
+    }
+}

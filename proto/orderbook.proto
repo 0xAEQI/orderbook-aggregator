@@ -2,20 +2,38 @@ syntax = "proto3";
 
 package orderbook;
 
+// Streams merged top-of-book snapshots from multiple exchanges.
 service OrderbookAggregator {
+  // Subscribe to a continuous stream of merged order book summaries.
+  // Each message contains the current top-10 bids/asks across all exchanges.
   rpc BookSummary(Empty) returns (stream Summary);
 }
 
 message Empty {}
 
+// Merged order book snapshot across all connected exchanges.
 message Summary {
+  // Best ask price minus best bid price. Zero if either side is empty.
+  // Negative spread indicates a crossed book (arbitrage opportunity).
   double spread = 1;
+
+  // Top-10 bid levels sorted by price descending (best bid first).
+  // At equal price, larger amount comes first (more liquidity).
   repeated Level bids = 2;
+
+  // Top-10 ask levels sorted by price ascending (best ask first).
+  // At equal price, larger amount comes first (more liquidity).
   repeated Level asks = 3;
 }
 
+// A single price level from one exchange.
 message Level {
+  // Source exchange identifier (e.g., "binance", "bitstamp").
   string exchange = 1;
+
+  // Price as a double (converted from internal fixed-point representation).
   double price = 2;
+
+  // Quantity available at this price level.
   double amount = 3;
 }
