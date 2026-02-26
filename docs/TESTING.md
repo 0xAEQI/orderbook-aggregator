@@ -3,14 +3,14 @@
 ## Running
 
 ```bash
-cargo test     # 53 tests
+cargo test     # 54 tests
 cargo clippy   # 0 warnings, unsafe_code = "forbid"
 cargo bench    # Criterion benchmarks (see BENCHMARKS.md)
 ```
 
 ## Coverage
 
-53 tests covering:
+54 tests covering:
 
 **Integration** -- end-to-end gRPC stream: mock exchange data through SPSC merger to gRPC client.
 

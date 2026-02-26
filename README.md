@@ -99,7 +99,7 @@ See [docs/TRADEOFFS.md](docs/TRADEOFFS.md) for alternatives considered and full 
 ## Testing
 
 ```bash
-cargo test     # 53 tests
+cargo test     # 54 tests
 cargo clippy   # 0 warnings, unsafe_code = "forbid"
 cargo bench    # Criterion benchmarks
 ```

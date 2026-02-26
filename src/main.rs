@@ -11,16 +11,16 @@ use orderbook_aggregator::exchange::binance::BinanceHandler;
 use orderbook_aggregator::exchange::bitstamp::BitstampHandler;
 use orderbook_aggregator::exchange::spawn_exchange;
 use orderbook_aggregator::merger;
-
-/// Capacity of each per-exchange SPSC ring buffer. Small by design -- for order
-/// book data only the latest snapshot matters. A small ring ensures the merger
-/// processes fresh data after any delay, instead of draining dozens of stale ones.
-const RING_BUFFER_CAPACITY: usize = 4;
 use orderbook_aggregator::metrics::{self, Metrics};
 use orderbook_aggregator::server::{
     OrderbookService, proto::orderbook_aggregator_server::OrderbookAggregatorServer,
 };
 use orderbook_aggregator::types::Summary;
+
+/// Capacity of each per-exchange SPSC ring buffer. Small by design -- for order
+/// book data only the latest snapshot matters. A small ring ensures the merger
+/// processes fresh data after any delay, instead of draining dozens of stale ones.
+const RING_BUFFER_CAPACITY: usize = 4;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
