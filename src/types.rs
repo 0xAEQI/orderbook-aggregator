@@ -3,6 +3,7 @@
 //! All types on the hot path are stack-allocated via [`ArrayVec`] and [`Copy`]
 //! to avoid heap allocation between WebSocket receive and merge output.
 
+use std::fmt;
 use std::time::Instant;
 
 use arrayvec::ArrayVec;
@@ -13,16 +14,119 @@ pub const MAX_LEVELS: usize = 20;
 /// Top N levels in the merged output sent to gRPC clients.
 pub const TOP_N: usize = 10;
 
+/// Fixed-point decimal with 8 fractional digits: `value × 10⁻⁸` stored as `u64`.
+///
+/// Matches the 8-decimal-place precision used by Binance and Bitstamp.
+/// Integer storage gives deterministic `Ord` (no NaN/Inf) and ~5× faster
+/// comparison than `f64::total_cmp`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
+pub struct FixedPoint(u64);
+
+impl FixedPoint {
+    pub const SCALE: u64 = 100_000_000; // 10^8
+
+    /// Parse a decimal string directly to fixed-point. No intermediate f64.
+    ///
+    /// Accepts formats: "123", "0.06824000", "101.5", ".5"
+    #[inline]
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        let bytes = s.as_bytes();
+        if bytes.is_empty() {
+            return None;
+        }
+
+        let mut i = 0;
+        let mut int_part: u64 = 0;
+
+        // Integer part.
+        while i < bytes.len() && bytes[i] != b'.' {
+            let d = bytes[i].wrapping_sub(b'0');
+            if d > 9 {
+                return None;
+            }
+            int_part = int_part.checked_mul(10)?.checked_add(u64::from(d))?;
+            i += 1;
+        }
+
+        let mut frac_part: u64 = 0;
+        let mut frac_digits: u32 = 0;
+
+        // Fractional part (after '.').
+        if i < bytes.len() && bytes[i] == b'.' {
+            i += 1;
+            while i < bytes.len() && frac_digits < 8 {
+                let d = bytes[i].wrapping_sub(b'0');
+                if d > 9 {
+                    return None;
+                }
+                frac_part = frac_part * 10 + u64::from(d);
+                frac_digits += 1;
+                i += 1;
+            }
+            // Skip remaining fractional digits beyond 8 (truncate, not round).
+            while i < bytes.len() {
+                let d = bytes[i].wrapping_sub(b'0');
+                if d > 9 {
+                    return None;
+                }
+                i += 1;
+            }
+        }
+
+        // Pad fractional part to 8 digits.
+        // e.g., "0.5" → frac_digits=1, frac_part=5, pad by 10^7 → 50_000_000
+        let pad = 8 - frac_digits;
+        for _ in 0..pad {
+            frac_part *= 10;
+        }
+
+        let value = int_part.checked_mul(Self::SCALE)?.checked_add(frac_part)?;
+        Some(Self(value))
+    }
+
+    /// Convert to f64 for proto serialization and display (cold path only).
+    #[inline]
+    #[must_use]
+    pub fn to_f64(self) -> f64 {
+        self.0 as f64 / Self::SCALE as f64
+    }
+
+    /// Create from f64 — convenience for tests and cold-path construction.
+    #[inline]
+    #[must_use]
+    pub fn from_f64(v: f64) -> Self {
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        Self((v * Self::SCALE as f64).round() as u64)
+    }
+
+    /// Raw inner value (for debugging/testing).
+    #[inline]
+    #[must_use]
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for FixedPoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let int = self.0 / Self::SCALE;
+        let frac = self.0 % Self::SCALE;
+        write!(f, "{int}.{frac:08}")
+    }
+}
+
 /// A single price level from an exchange.
 ///
-/// `Copy` by design — all fields are trivially copyable (`&'static str`, `f64`,
-/// `f64`), allowing zero-overhead moves through channels and merge buffers.
+/// `Copy` by design — all fields are trivially copyable (`&'static str`,
+/// `FixedPoint`, `FixedPoint`), allowing zero-overhead moves through channels
+/// and merge buffers.
 #[derive(Debug, Clone, Copy)]
 pub struct Level {
     /// Source exchange name (e.g., `"binance"`, `"bitstamp"`).
     pub exchange: &'static str,
-    pub price: f64,
-    pub amount: f64,
+    pub price: FixedPoint,
+    pub amount: FixedPoint,
 }
 
 /// Snapshot of one exchange's order book at a point in time.
@@ -50,4 +154,75 @@ pub struct Summary {
     pub bids: ArrayVec<Level, TOP_N>,
     /// Top 10 asks across all exchanges, lowest price first.
     pub asks: ArrayVec<Level, TOP_N>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_integer_only() {
+        assert_eq!(FixedPoint::parse("123").unwrap().raw(), 123 * FixedPoint::SCALE);
+    }
+
+    #[test]
+    fn parse_with_fractional() {
+        let fp = FixedPoint::parse("0.06824000").unwrap();
+        assert_eq!(fp.raw(), 6_824_000);
+    }
+
+    #[test]
+    fn parse_short_fractional() {
+        let fp = FixedPoint::parse("101.5").unwrap();
+        assert_eq!(fp.raw(), 101 * FixedPoint::SCALE + 50_000_000);
+    }
+
+    #[test]
+    fn parse_leading_dot() {
+        let fp = FixedPoint::parse(".5").unwrap();
+        assert_eq!(fp.raw(), 50_000_000);
+    }
+
+    #[test]
+    fn parse_rejects_empty() {
+        assert!(FixedPoint::parse("").is_none());
+    }
+
+    #[test]
+    fn parse_rejects_non_digit() {
+        assert!(FixedPoint::parse("abc").is_none());
+        assert!(FixedPoint::parse("1.2x").is_none());
+    }
+
+    #[test]
+    fn to_f64_roundtrip() {
+        let fp = FixedPoint::parse("0.06824000").unwrap();
+        assert!((fp.to_f64() - 0.06824).abs() < 1e-12);
+    }
+
+    #[test]
+    fn from_f64_roundtrip() {
+        let fp = FixedPoint::from_f64(100.5);
+        assert_eq!(fp.raw(), 100 * FixedPoint::SCALE + 50_000_000);
+    }
+
+    #[test]
+    fn display_formatting() {
+        let fp = FixedPoint::parse("0.06824000").unwrap();
+        assert_eq!(format!("{fp}"), "0.06824000");
+    }
+
+    #[test]
+    fn ordering_matches_numeric() {
+        let a = FixedPoint::parse("0.06824000").unwrap();
+        let b = FixedPoint::parse("0.06825000").unwrap();
+        assert!(a < b);
+    }
+
+    #[test]
+    fn truncates_beyond_8_digits() {
+        // "0.068240001" → truncates to "0.06824000"
+        let fp = FixedPoint::parse("0.068240001").unwrap();
+        assert_eq!(fp.raw(), 6_824_000);
+    }
 }

@@ -1,6 +1,6 @@
 //! End-to-end integration test: mock exchange data → merger → gRPC → client.
 
-#![allow(clippy::float_cmp)] // Exact f64 literals from test inputs — no arithmetic rounding.
+#![allow(clippy::float_cmp)] // Exact f64 values from proto — no arithmetic rounding.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,7 +14,7 @@ use orderbook_aggregator::metrics::Metrics;
 use orderbook_aggregator::server::proto::orderbook_aggregator_client::OrderbookAggregatorClient;
 use orderbook_aggregator::server::proto::orderbook_aggregator_server::OrderbookAggregatorServer;
 use orderbook_aggregator::server::{proto, OrderbookService};
-use orderbook_aggregator::types::{Level, OrderBook, Summary};
+use orderbook_aggregator::types::{FixedPoint, Level, OrderBook, Summary};
 
 /// End-to-end: mock exchange data → merger → gRPC server → gRPC client.
 #[tokio::test]
@@ -76,15 +76,15 @@ async fn grpc_streams_merged_summary() {
             exchange: "test_a",
             bids: [Level {
                 exchange: "test_a",
-                price: 100.0,
-                amount: 5.0,
+                price: FixedPoint::from_f64(100.0),
+                amount: FixedPoint::from_f64(5.0),
             }]
             .into_iter()
             .collect(),
             asks: [Level {
                 exchange: "test_a",
-                price: 101.0,
-                amount: 3.0,
+                price: FixedPoint::from_f64(101.0),
+                amount: FixedPoint::from_f64(3.0),
             }]
             .into_iter()
             .collect(),
@@ -98,15 +98,15 @@ async fn grpc_streams_merged_summary() {
             exchange: "test_b",
             bids: [Level {
                 exchange: "test_b",
-                price: 100.5,
-                amount: 2.0,
+                price: FixedPoint::from_f64(100.5),
+                amount: FixedPoint::from_f64(2.0),
             }]
             .into_iter()
             .collect(),
             asks: [Level {
                 exchange: "test_b",
-                price: 100.8,
-                amount: 4.0,
+                price: FixedPoint::from_f64(100.8),
+                amount: FixedPoint::from_f64(4.0),
             }]
             .into_iter()
             .collect(),

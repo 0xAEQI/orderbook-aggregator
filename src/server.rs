@@ -62,8 +62,8 @@ fn to_proto(summary: Summary) -> proto::Summary {
             .into_iter()
             .map(|l| proto::Level {
                 exchange: l.exchange.to_string(),
-                price: l.price,
-                amount: l.amount,
+                price: l.price.to_f64(),
+                amount: l.amount.to_f64(),
             })
             .collect(),
         asks: summary
@@ -71,8 +71,8 @@ fn to_proto(summary: Summary) -> proto::Summary {
             .into_iter()
             .map(|l| proto::Level {
                 exchange: l.exchange.to_string(),
-                price: l.price,
-                amount: l.amount,
+                price: l.price.to_f64(),
+                amount: l.amount.to_f64(),
             })
             .collect(),
     }

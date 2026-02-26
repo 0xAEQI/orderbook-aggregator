@@ -176,27 +176,20 @@ pub fn merge(books: &BookStore) -> Summary {
     // Bids: highest price first, then largest amount as tiebreaker.
     let bids = merge_top_n(
         &bid_slices[..k],
-        |a, b| {
-            b.price
-                .total_cmp(&a.price)
-                .then(b.amount.total_cmp(&a.amount))
-        },
+        |a, b| b.price.cmp(&a.price).then(b.amount.cmp(&a.amount)),
         TOP_N,
     );
 
     // Asks: lowest price first, then largest amount as tiebreaker.
     let asks = merge_top_n(
         &ask_slices[..k],
-        |a, b| {
-            a.price
-                .total_cmp(&b.price)
-                .then(b.amount.total_cmp(&a.amount))
-        },
+        |a, b| a.price.cmp(&b.price).then(b.amount.cmp(&a.amount)),
         TOP_N,
     );
 
+    // Spread computed as f64 — goes directly to proto (cold path).
     let spread = match (asks.first(), bids.first()) {
-        (Some(ask), Some(bid)) => ask.price - bid.price,
+        (Some(ask), Some(bid)) => ask.price.to_f64() - bid.price.to_f64(),
         _ => 0.0,
     };
 
@@ -204,15 +197,16 @@ pub fn merge(books: &BookStore) -> Summary {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)] // Exact f64 literals from test inputs — no arithmetic rounding.
+#[allow(clippy::float_cmp)] // Exact f64 spread from test inputs — no arithmetic rounding.
 mod tests {
     use super::*;
+    use crate::types::FixedPoint;
 
     fn level(exchange: &'static str, price: f64, amount: f64) -> Level {
         Level {
             exchange,
-            price,
-            amount,
+            price: FixedPoint::from_f64(price),
+            amount: FixedPoint::from_f64(amount),
         }
     }
 
@@ -245,11 +239,11 @@ mod tests {
 
         // Best bid should be bitstamp at 100.5.
         assert_eq!(summary.bids[0].exchange, "bitstamp");
-        assert_eq!(summary.bids[0].price, 100.5);
+        assert_eq!(summary.bids[0].price, FixedPoint::from_f64(100.5));
 
         // Best ask should be bitstamp at 100.8.
         assert_eq!(summary.asks[0].exchange, "bitstamp");
-        assert_eq!(summary.asks[0].price, 100.8);
+        assert_eq!(summary.asks[0].price, FixedPoint::from_f64(100.8));
 
         // Spread = best ask - best bid = 100.8 - 100.5 = 0.3.
         assert!((summary.spread - 0.3).abs() < 1e-10);
@@ -301,8 +295,8 @@ mod tests {
         books.insert(book("b", &[level("b", 100.0, 5.0)], &[]));
 
         let summary = merge(&books);
-        assert_eq!(summary.bids[0].amount, 5.0);
-        assert_eq!(summary.bids[1].amount, 1.0);
+        assert_eq!(summary.bids[0].amount, FixedPoint::from_f64(5.0));
+        assert_eq!(summary.bids[1].amount, FixedPoint::from_f64(1.0));
     }
 
     #[test]
@@ -319,8 +313,8 @@ mod tests {
         let summary = merge(&books);
         assert_eq!(summary.bids.len(), 2);
         assert_eq!(summary.asks.len(), 2);
-        assert_eq!(summary.bids[0].price, 100.0);
-        assert_eq!(summary.asks[0].price, 101.0);
+        assert_eq!(summary.bids[0].price, FixedPoint::from_f64(100.0));
+        assert_eq!(summary.asks[0].price, FixedPoint::from_f64(101.0));
         assert!((summary.spread - 1.0).abs() < 1e-10);
     }
 
@@ -342,8 +336,8 @@ mod tests {
         ));
 
         let summary = merge(&books);
-        assert_eq!(summary.bids[0].price, 102.0);
-        assert_eq!(summary.asks[0].price, 101.0);
+        assert_eq!(summary.bids[0].price, FixedPoint::from_f64(102.0));
+        assert_eq!(summary.asks[0].price, FixedPoint::from_f64(101.0));
         // Spread is negative — signals an arbitrage opportunity.
         assert!(summary.spread < 0.0);
         assert!((summary.spread - (-1.0)).abs() < 1e-10);
@@ -358,8 +352,8 @@ mod tests {
         books.insert(book("b", &[], &[level("b", 100.0, 5.0)]));
 
         let summary = merge(&books);
-        assert_eq!(summary.asks[0].amount, 5.0);
-        assert_eq!(summary.asks[1].amount, 1.0);
+        assert_eq!(summary.asks[0].amount, FixedPoint::from_f64(5.0));
+        assert_eq!(summary.asks[1].amount, FixedPoint::from_f64(1.0));
     }
 
     #[test]
@@ -388,7 +382,7 @@ mod tests {
         ));
 
         let summary = merge(&books);
-        let prices: Vec<f64> = summary.bids.iter().map(|l| l.price).collect();
+        let prices: Vec<f64> = summary.bids.iter().map(|l| l.price.to_f64()).collect();
         assert_eq!(prices, vec![100.0, 99.0, 98.0, 97.0, 96.0, 95.0]);
     }
 }
