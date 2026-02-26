@@ -124,12 +124,21 @@ src/
     mod.rs             WsHandler trait, shared reconnection loop, utilities
     binance.rs         Binance depth20@100ms SIMD byte walker + WebSocket adapter
     bitstamp.rs        Bitstamp order_book SIMD byte walker + WebSocket adapter
+  gen/
+    orderbook.rs       Generated protobuf types (checked in, no protoc needed)
 proto/
   orderbook.proto      gRPC service definition
+benches/
+  hot_path.rs          Criterion micro-benchmarks for decode, merge, and E2E pipeline
+tests/
+  integration.rs       E2E test: mock data → SPSC → merger → gRPC server → client
 docs/
   ARCHITECTURE.md      Thread model, data flow, latency budget
   BENCHMARKS.md        Criterion results, production latency, reproduction
   TRADEOFFS.md         Design decisions with alternatives and rationale
   MONITORING.md        Prometheus metrics, Grafana dashboard, health endpoint
   TESTING.md           Test suite coverage breakdown, CI
+monitoring/
+  prometheus.yml       Prometheus scrape config
+  grafana/             Provisioned datasource + pre-built dashboard
 ```

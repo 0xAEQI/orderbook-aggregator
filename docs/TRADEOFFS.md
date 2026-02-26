@@ -133,7 +133,20 @@ The cost is slightly higher bandwidth (~2KB per snapshot vs ~100 bytes per diff)
 
 **Why**:
 
-I/O is not the bottleneck. Each exchange sends ~10 messages/second -- that's 2 `read()` syscalls/second total across both connections. `io_uring` eliminates syscall overhead by batching submissions through a shared ring buffer with the kernel. At 2 syscalls/second, the total overhead is ~20μs/second -- unmeasurable against the process's actual hot path (JSON parsing at 1.85μs per message, merger at ~200ns).
+I/O is not the bottleneck. The syscall overhead math:
+
+- Binance sends ~10 messages/second, Bitstamp ~10 → **~20 `read()` syscalls/second** total.
+- Each `read()` syscall costs ~200-500ns in user→kernel→user mode switching on modern Linux.
+- Total syscall overhead: **~20 × ~300ns ≈ 6μs/second**.
+- Per-message syscall tax: **~300ns** vs 1.94μs decode time (~15% of decode).
+
+`io_uring` with `SQPOLL` would eliminate the per-syscall mode switch by having a kernel thread poll the submission ring. This saves ~300ns per message -- meaningful in isolation, but the architectural cost is prohibitive:
+
+**1. `tokio-tungstenite` is incompatible.** It uses mio's readiness-based model (epoll): the application owns buffers, gets notified when the fd is ready, then issues `read()`. `io_uring` uses a completion-based model: the kernel owns the buffer until the operation completes. These are fundamentally different memory ownership models. Switching requires abandoning `tokio-tungstenite` and writing a custom WebSocket implementation on raw `io_uring`.
+
+**2. The ecosystem isn't ready.** `tokio-uring` is dormant (last release: November 2022). The Rust `io_uring` ecosystem has matured for file I/O and database engines (TiKV, Glommio) but not for networked application I/O where `tokio` + epoll remains the production standard.
+
+**3. The current architecture already minimizes the cost.** Each exchange gets a dedicated OS thread with a `current_thread` runtime, so each epoll instance monitors exactly 1 fd. No thundering herd, no unnecessary wake-ups, no work-stealing migration. `TCP_NODELAY` + `write_buffer_size: 0` ensure immediate frame delivery.
 
 The workload profile is the opposite of where `io_uring` excels:
 
@@ -144,12 +157,6 @@ The workload profile is the opposite of where `io_uring` excels:
 | Batched submission (amortize syscalls) | Nothing to batch |
 | Kernel-owned buffers (zero-copy) | Buffers are tiny (~2KB snapshots) |
 
-`tokio-tungstenite` is architecturally incompatible. It uses mio's readiness-based model (epoll): the application owns buffers, gets notified when the fd is ready, then issues `read()`. `io_uring` uses a completion-based model: the kernel owns the buffer until the operation completes. These are fundamentally different memory ownership models. Switching would mean abandoning `tokio-tungstenite` and writing a custom WebSocket implementation on `tokio-uring` or raw `io_uring` -- significant complexity for no measurable gain.
-
-The `tokio-uring` crate itself is dormant (last release: November 2022). The Rust `io_uring` ecosystem has matured for file I/O and database engines (TiKV, Glommio) but not for networked application I/O where `tokio` + epoll remains the production standard.
-
-The current architecture already minimizes syscall overhead by design. Each exchange gets a dedicated OS thread with a `current_thread` runtime, so each epoll instance monitors exactly 1 fd. There is no thundering herd, no unnecessary wake-ups, no work-stealing migration. `TCP_NODELAY` + `write_buffer_size: 0` ensure immediate frame delivery.
-
 **Where `io_uring` would help**: High-connection-count servers (1000s of fds), file I/O intensive workloads (database engines, logging), network proxies/load balancers at 10K+ connections, or kernel bypass when DPDK/SPDK are too heavyweight.
 
-**Tradeoff**: Keeping epoll means ~10μs/second of syscall overhead that `io_uring` could theoretically eliminate. At current production latencies (P50=6μs, P99<20μs per message), this is noise -- and the alternative requires rewriting the transport layer.
+**Tradeoff**: Keeping epoll costs ~300ns per message in syscall overhead. Eliminating it requires rewriting the WebSocket transport layer on an immature ecosystem for a ~15% improvement on a stage that accounts for less than half the pipeline latency.
