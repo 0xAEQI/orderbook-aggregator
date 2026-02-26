@@ -133,13 +133,20 @@ fn bench_e2e(c: &mut Criterion) {
     });
 }
 
-criterion_group!(
-    benches,
-    bench_binance_decode,
-    bench_bitstamp_decode,
-    bench_bitstamp_decode_100,
-    bench_fixed_parse,
-    bench_merge,
-    bench_e2e,
-);
+criterion_group! {
+    name = benches;
+    // 10s measurement, 200 samples, 3s warmup — reduces variance on noisy machines.
+    config = Criterion::default()
+        .measurement_time(std::time::Duration::from_secs(10))
+        .sample_size(200)
+        .warm_up_time(std::time::Duration::from_secs(3))
+        .noise_threshold(0.03);
+    targets =
+        bench_binance_decode,
+        bench_bitstamp_decode,
+        bench_bitstamp_decode_100,
+        bench_fixed_parse,
+        bench_merge,
+        bench_e2e,
+}
 criterion_main!(benches);

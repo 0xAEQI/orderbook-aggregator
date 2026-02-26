@@ -64,6 +64,7 @@ impl Exchange for Binance {
                     info!(exchange = "binance", "connected");
                     self.metrics.connected.store(true, Relaxed);
                     backoff_ms = 1000;
+                    let mut last_seq: u64 = 0;
 
                     // Keep write half alive — tungstenite's codec flushes Pong
                     // replies through the BiLock on each read() call.
@@ -92,11 +93,26 @@ impl Exchange for Binance {
                         };
 
                         let t0 = Instant::now();
-                        let Some((bids, asks)) = walk_binance(&text) else {
+                        let Some((seq, bids, asks)) = walk_binance(&text) else {
                             self.metrics.errors.fetch_add(1, Relaxed);
                             warn!(exchange = "binance", "parse error");
                             continue;
                         };
+
+                        // Sequence gap detection: lastUpdateId should increase
+                        // monotonically. A gap means we missed snapshots — log it
+                        // so monitoring can alert.
+                        if seq > 0 && last_seq > 0 && seq <= last_seq {
+                            warn!(
+                                exchange = "binance",
+                                seq, last_seq,
+                                "out-of-order update (stale or duplicate)"
+                            );
+                            self.metrics.errors.fetch_add(1, Relaxed);
+                            continue;
+                        }
+                        last_seq = seq;
+
                         let Some(book) = super::build_book("binance", &bids, &asks, t0) else {
                             self.metrics.errors.fetch_add(1, Relaxed);
                             warn!(exchange = "binance", "malformed level");
@@ -131,7 +147,7 @@ impl Exchange for Binance {
 /// Decode a Binance `depth20` JSON frame. For benchmarks.
 #[must_use]
 pub fn parse_depth_json(json: &str) -> Option<OrderBook> {
-    let (bids, asks) = walk_binance(json)?;
+    let (_seq, bids, asks) = walk_binance(json)?;
     super::build_book("binance", &bids, &asks, Instant::now())
 }
 

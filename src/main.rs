@@ -83,10 +83,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Spawn merger task.
     let merger_handle = {
-        let cancel = cancel.clone();
         let metrics = metrics.clone();
         tokio::spawn(async move {
-            merger::run(book_rx, summary_tx, metrics, cancel).await;
+            merger::run(book_rx, summary_tx, metrics).await;
         })
     };
 

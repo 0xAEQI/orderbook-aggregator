@@ -12,18 +12,23 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use arrayvec::ArrayVec;
 use tokio::sync::{mpsc, watch};
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::metrics::Metrics;
 use crate::types::{Level, OrderBook, Summary, TOP_N};
 
 /// Number of exchanges (Binance + Bitstamp). Sizes stack-allocated arrays.
 const MAX_EXCHANGES: usize = 2;
+
+/// Books older than this are evicted before merging — prevents stale data from
+/// one exchange contaminating the merged output after a disconnect. A crossed
+/// book (negative spread) from 5-second-old data is worse than a single-exchange
+/// book from fresh data.
+const STALE_THRESHOLD: Duration = Duration::from_secs(5);
 
 /// Latest book per exchange. Fixed-size array, linear scan — no `HashMap`.
 pub struct BookStore {
@@ -64,52 +69,69 @@ impl BookStore {
         }
     }
 
+    /// Iterate over populated books (stale books already evicted as `None`).
     #[inline]
     fn iter(&self) -> impl Iterator<Item = &OrderBook> {
         self.books[..self.len].iter().filter_map(|b| b.as_ref())
     }
+
+    /// Evict books older than `threshold`. Prevents stale data from a
+    /// disconnected exchange from contaminating the merged output.
+    fn evict_stale(&mut self, threshold: Duration) {
+        for i in 0..self.len {
+            if let Some(book) = &self.books[i] {
+                let age = book.decode_start.elapsed();
+                if age > threshold {
+                    warn!(
+                        exchange = book.exchange,
+                        age_ms = age.as_millis() as u64,
+                        "evicting stale book"
+                    );
+                    self.books[i] = None;
+                }
+            }
+        }
+    }
 }
 
-/// Runs the merger loop until cancellation or channel closure.
+/// Runs the merger loop until channel closure.
+///
+/// Uses a tight `recv()` loop instead of `tokio::select!` with cancellation —
+/// eliminates the per-message overhead of creating and polling a cancellation
+/// future. Shutdown propagates naturally: cancellation → adapters exit → senders
+/// drop → channel closes → `recv()` returns `None`.
 pub async fn run(
     mut rx: mpsc::Receiver<OrderBook>,
     summary_tx: watch::Sender<Summary>,
     metrics: Arc<Metrics>,
-    cancel: CancellationToken,
 ) {
     let mut books = BookStore::new();
 
     info!("merger started");
 
-    loop {
-        tokio::select! {
-            _ = cancel.cancelled() => {
-                info!("merger shutting down");
-                return;
-            }
-            result = rx.recv() => {
-                let Some(book) = result else {
-                    info!("mpsc channel closed");
-                    return;
-                };
-                let decode_start = book.decode_start;
-                books.insert(book);
-                let t0 = Instant::now();
-                let summary = merge(&books);
-                metrics.merge_latency.record(t0.elapsed());
-                metrics.merges.fetch_add(1, Relaxed);
-                debug!(
-                    spread = summary.spread,
-                    bids = summary.bids.len(),
-                    asks = summary.asks.len(),
-                    "merged"
-                );
-                let _ = summary_tx.send(summary);
-                // e2e: WS frame received → merged summary published.
-                metrics.e2e_latency.record(decode_start.elapsed());
-            }
-        }
+    // Tight loop: no select!, no cancellation future allocation per iteration.
+    // Channel closure (all senders dropped) is the exit signal.
+    while let Some(book) = rx.recv().await {
+        let decode_start = book.decode_start;
+        books.insert(book);
+        books.evict_stale(STALE_THRESHOLD);
+
+        let t0 = Instant::now();
+        let summary = merge(&books);
+        metrics.merge_latency.record(t0.elapsed());
+        metrics.merges.fetch_add(1, Relaxed);
+        debug!(
+            spread = summary.spread,
+            bids = summary.bids.len(),
+            asks = summary.asks.len(),
+            "merged"
+        );
+        let _ = summary_tx.send(summary);
+        // e2e: WS frame received → merged summary published.
+        metrics.e2e_latency.record(decode_start.elapsed());
     }
+
+    info!("mpsc channel closed, merger exiting");
 }
 
 /// K-way merge of pre-sorted slices → top `n`. O(n × k) comparisons, zero alloc.
@@ -371,5 +393,33 @@ mod tests {
         let summary = merge(&books);
         let prices: Vec<f64> = summary.bids.iter().map(|l| l.price.to_f64()).collect();
         assert_eq!(prices, vec![100.0, 99.0, 98.0, 97.0, 96.0, 95.0]);
+    }
+
+    #[test]
+    fn stale_book_eviction() {
+        let mut books = BookStore::new();
+
+        // Insert a book with a very old decode_start.
+        let old_book = OrderBook {
+            exchange: "stale_ex",
+            bids: [level("stale_ex", 100.0, 1.0)].into_iter().collect(),
+            asks: [level("stale_ex", 101.0, 1.0)].into_iter().collect(),
+            decode_start: Instant::now().checked_sub(Duration::from_secs(10)).unwrap(),
+        };
+        books.insert(old_book);
+
+        // Fresh book.
+        books.insert(book(
+            "fresh_ex",
+            &[level("fresh_ex", 99.0, 2.0)],
+            &[level("fresh_ex", 102.0, 3.0)],
+        ));
+
+        books.evict_stale(STALE_THRESHOLD);
+        let summary = merge(&books);
+
+        // Only fresh_ex should survive.
+        assert_eq!(summary.bids.len(), 1);
+        assert_eq!(summary.bids[0].exchange, "fresh_ex");
     }
 }

@@ -31,6 +31,7 @@ futures-util = "0.3"
 rand = "0.9"
 axum = "0.7"
 arrayvec = "0.7"
+memchr = "2"
 ratatui = "0.29"
 crossterm = "0.28"
 

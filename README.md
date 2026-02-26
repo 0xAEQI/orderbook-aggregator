@@ -25,9 +25,13 @@ WebSocket Feeds              Merger               gRPC Server
 **Data flow:**
 1. Exchange adapters connect via WebSocket with `TCP_NODELAY` and `write_buffer_size: 0`
 2. Each adapter parses updates into `OrderBook` snapshots (stack-allocated `ArrayVec`) and sends via `mpsc` (move semantics — zero clone overhead)
-3. Merger receives from all exchanges, maintains latest book per exchange in a fixed-size array (no `HashMap`), merges using a k-way cursor algorithm
+3. Merger receives from all exchanges, maintains latest book per exchange in a fixed-size array (no `HashMap`), evicts stale books (>5s), merges using a k-way cursor algorithm
 4. Merged top-10 + spread published via `tokio::watch` (latest-value semantics — clients always get the most recent state)
 5. gRPC clients subscribe and receive the stream; Protobuf conversion happens on the client handler task, not the merger
+
+**Data integrity:**
+- Binance `lastUpdateId` tracked per connection — out-of-order/duplicate snapshots detected and dropped
+- Stale book eviction — if an exchange disconnects, its book is evicted after 5s to prevent stale data from contaminating the merged output
 
 ## Quick Start (Docker)
 
@@ -148,8 +152,9 @@ The entire path from WebSocket frame receipt through merge output is zero-alloca
 
 The only remaining allocations are the WebSocket frame `String` (from tokio-tungstenite, unavoidable without kernel bypass) and Protobuf encoding on the gRPC egress path (cold, per-client).
 
-### Custom Byte Walker + Fixed-Point Integer Parsing
+### SIMD Byte Walker + Fixed-Point Integer Parsing
 
+- **SIMD substring search**: JSON key patterns (`"bids":`, `"asks":`, `"event":`) are located via `memchr::memmem` — precompiled `Finder` objects using SSE2/AVX2 vectorized search. On the Bitstamp 100-level payload this cut decode time nearly in half vs. byte-by-byte scanning.
 - **Custom byte walker**: Hand-written JSON scanner (`json_walker.rs`) that walks directly to `bids`/`asks` arrays by key name, skipping envelope fields. Eliminates simd-json + serde overhead (~30-40% from visitor dispatch, field matching, and drain loops). Zero-copy `&str` borrowing via byte offset tracking — no buffer mutation needed.
 - **`FixedPoint::parse`**: Direct string-to-integer byte scanning — parses decimal strings into `u64` with 10^8 scaling. No intermediate `f64`, no IEEE 754 rounding. Both Binance and Bitstamp use 8 decimal places, aligning perfectly with the 10^8 scale factor.
 - **Bitstamp level cap**: `read_levels::<MAX_LEVELS>()` keeps the first 20 of 100 levels and skips the rest in a tight byte-scanning loop — no serde `IgnoredAny` overhead.
@@ -172,6 +177,7 @@ The Prometheus histogram stores per-bucket (non-cumulative) counts across 16 log
 
 - **`tokio::sync::mpsc`** (exchange → merger): Move semantics — the `OrderBook` is transferred without cloning. Combined with `ArrayVec`-based types, the entire transfer is a stack-value move. Adapters use `try_send` to avoid blocking the WebSocket read loop when the channel is full — for order book data, dropping a stale snapshot is correct since the next frame contains a newer one.
 - **`tokio::watch`** (merger → gRPC): Latest-value semantics. Clients always get the most recent merged state. For order book data, intermediate states between reads are stale and irrelevant — only the current top-of-book matters.
+- **Tight merger loop**: The merger uses `while let Some(book) = rx.recv().await` instead of `tokio::select!` with a cancellation branch — eliminates per-message overhead of creating and polling a cancellation future. Shutdown propagates naturally through channel closure (cancel → adapters exit → senders drop → `recv()` returns `None`).
 
 ### Fixed-Point Integer Prices
 
@@ -206,9 +212,9 @@ For a production-grade system at Keyrock-level latency requirements, the followi
 cargo test
 ```
 
-34 tests covering:
+35 tests covering:
 - **Integration**: end-to-end gRPC stream — mock exchange data through merger to gRPC client
-- **Merger**: cross-exchange merging, single-exchange degraded mode, crossed book (negative spread), truncation to top-10, empty book handling, bid and ask tiebreaking by amount, k-way merge interleave correctness
+- **Merger**: cross-exchange merging, single-exchange degraded mode, crossed book (negative spread), truncation to top-10, empty book handling, bid and ask tiebreaking by amount, k-way merge interleave correctness, stale book eviction
 - **FixedPoint**: parse formats (integer, fractional, leading dot, truncation), rejection of invalid input and overflow, f64 roundtrip, ordering, display
 - **JSON walker**: Binance/Bitstamp happy path, unknown field tolerance, empty levels, non-data events, level capping at 20, malformed JSON rejection
 - **Binance parser**: realistic depth20 JSON payload, unknown field tolerance
@@ -222,11 +228,15 @@ Criterion micro-benchmarks for every stage of the hot path:
 cargo bench
 ```
 
-| Benchmark | What it measures | Typical |
-|-----------|-----------------|---------|
-| `binance_decode_20` | Byte walker + fixed-point for 20-level Binance depth snapshot | ~1.8μs |
-| `bitstamp_decode_20` | Byte walker + fixed-point for 20-level Bitstamp order book | ~1.7μs |
-| `bitstamp_decode_100` | Same, but 100 levels (production Bitstamp payload) — keeps 20, skips 80 | ~3.3μs |
-| `fixed_point_parse` | Byte-scan decimal string to `FixedPoint(u64)` — price + quantity pair | ~13ns |
-| `merge_2x20` | K-way merge of 2×20 levels into top-10 output | ~250ns |
-| `e2e_parse_merge` | Full pipeline: Binance 20 + Bitstamp 100 → decode → merge → Summary | ~4.4μs |
+Configured for stability: 200 samples, 10s measurement, 3s warmup, 3% noise threshold.
+
+| Benchmark | What it measures | Median | 95% CI |
+|-----------|-----------------|--------|--------|
+| `binance_decode_20` | SIMD byte walker + fixed-point for 20-level Binance depth snapshot | 1.73 μs | [1.68, 1.78] |
+| `bitstamp_decode_20` | SIMD byte walker + fixed-point for 20-level Bitstamp order book | 1.74 μs | [1.68, 1.80] |
+| `bitstamp_decode_100` | Same, but 100 levels (production Bitstamp payload) — keeps 20, skips 80 | 1.78 μs | [1.72, 1.84] |
+| `fixed_point_parse` | Byte-scan decimal string to `FixedPoint(u64)` — price + quantity pair | 13 ns | [12.9, 13.6] |
+| `merge_2x20` | K-way merge of 2×20 levels into top-10 output | 252 ns | [236, 271] |
+| `e2e_parse_merge` | Full pipeline: Binance 20 + Bitstamp 100 → decode → merge → Summary | **3.18 μs** | [3.06, 3.31] |
+
+Note: `bitstamp_decode_100` (1.78μs) is nearly identical to `bitstamp_decode_20` (1.74μs) — SIMD `memmem` skips the 80 excess levels so fast that buffer size barely matters.

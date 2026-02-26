@@ -26,9 +26,8 @@ async fn grpc_streams_merged_summary() {
 
     // Merger task.
     tokio::spawn({
-        let cancel = cancel.clone();
         let metrics = metrics.clone();
-        async move { merger::run(book_rx, summary_tx, metrics, cancel).await }
+        async move { merger::run(book_rx, summary_tx, metrics).await }
     });
 
     // gRPC server on ephemeral port.

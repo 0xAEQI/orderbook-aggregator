@@ -1,9 +1,9 @@
 //! Custom byte walker for zero-copy JSON parsing.
 //!
-//! Uses byte pattern search (`find_after`) to seek directly to `"bids":` and
-//! `"asks":` in the JSON buffer — skips all envelope fields without parsing them.
-//! Searches are chained forward (each starts from the scanner's current position)
-//! so the buffer is scanned at most once.
+//! Uses SIMD-accelerated substring search (`memchr::memmem`) to seek directly to
+//! `"bids":` and `"asks":` in the JSON buffer — skips all envelope fields without
+//! parsing them. Searches are chained forward (each starts from the scanner's
+//! current position) so the buffer is scanned at most once.
 //!
 //! Exchange JSON has a fixed schema (bids before asks, event before data) so
 //! key-name collisions inside string values are impossible; if one ever occurred,
@@ -14,27 +14,40 @@
 //! allocation.
 
 use arrayvec::ArrayVec;
+use memchr::memmem;
 
 use crate::types::MAX_LEVELS;
 
 /// Borrowed price/qty string pairs extracted from a JSON array.
 type Levels<'a> = ArrayVec<[&'a str; 2], MAX_LEVELS>;
 
-/// Find `pattern` in `buf[start..]` and return the absolute position after it.
-///
-/// First-byte gate ensures the full comparison only fires on `"` boundaries.
+/// Pre-computed SIMD searchers for JSON key patterns. Built once, reused across
+/// all calls — `memmem::Finder` selects the optimal SIMD algorithm (SSE2/AVX2)
+/// at construction time based on pattern length and CPU features.
+struct Patterns {
+    bids: memmem::Finder<'static>,
+    asks: memmem::Finder<'static>,
+    event: memmem::Finder<'static>,
+}
+
+/// Singleton pattern table — zero runtime cost after first use.
+fn patterns() -> &'static Patterns {
+    use std::sync::OnceLock;
+    static P: OnceLock<Patterns> = OnceLock::new();
+    P.get_or_init(|| Patterns {
+        bids: memmem::Finder::new(b"\"bids\":"),
+        asks: memmem::Finder::new(b"\"asks\":"),
+        event: memmem::Finder::new(b"\"event\":"),
+    })
+}
+
+/// SIMD-accelerated pattern search in `buf[start..]`. Returns absolute position
+/// after the pattern. Uses vectorized two-byte or multi-byte algorithms from
+/// `memchr::memmem` — typically 4-8× faster than byte-by-byte scanning on `x86_64`.
 #[inline]
-fn find_after(buf: &[u8], start: usize, pattern: &[u8]) -> Option<usize> {
-    let first = *pattern.first()?;
-    let plen = pattern.len();
-    let mut i = start;
-    while i + plen <= buf.len() {
-        if buf[i] == first && buf[i..i + plen] == *pattern {
-            return Some(i + plen);
-        }
-        i += 1;
-    }
-    None
+fn find_after_simd(buf: &[u8], start: usize, finder: &memmem::Finder<'_>) -> Option<usize> {
+    let needle_len = finder.needle().len();
+    finder.find(&buf[start..]).map(|pos| start + pos + needle_len)
 }
 
 /// Byte scanner that tracks position in an input buffer.
@@ -103,7 +116,7 @@ impl<'a> Scanner<'a> {
 
 /// Read an array of `[price, qty]` pairs, keeping the first `N`.
 ///
-/// Once at capacity, returns immediately — the caller's `find_after` will
+/// Once at capacity, returns immediately — the caller's `find_after_simd` will
 /// skip past the remaining elements to the next key. No drain loop needed:
 /// level data contains only decimal strings, so `"asks":` can never
 /// false-match inside it.
@@ -136,7 +149,7 @@ fn read_levels<'a, const N: usize>(s: &mut Scanner<'a>) -> Option<ArrayVec<[&'a 
             Some(b',') => {
                 s.pos += 1;
                 if levels.len() == N {
-                    // At capacity — bail out. Caller's find_after skips the rest.
+                    // At capacity — bail out. Caller's find_after_simd skips the rest.
                     return Some(levels);
                 }
             }
@@ -149,48 +162,84 @@ fn read_levels<'a, const N: usize>(s: &mut Scanner<'a>) -> Option<ArrayVec<[&'a 
     }
 }
 
-/// Walk a Binance `depth20` JSON frame and extract bids/asks string pairs.
+/// Walk a Binance `depth20` JSON frame and extract sequence ID + bids/asks.
 ///
-/// Seeks directly to `"bids":` then forward to `"asks":` — single pass,
-/// skips `lastUpdateId` and any other envelope fields without parsing them.
+/// Extracts `lastUpdateId` for sequence gap detection, then seeks to `"bids":`
+/// and `"asks":` — single pass. Pattern search uses SIMD (SSE2/AVX2) via
+/// `memchr::memmem`.
 #[must_use]
-pub fn walk_binance(json: &str) -> Option<(Levels<'_>, Levels<'_>)> {
+pub fn walk_binance(json: &str) -> Option<(u64, Levels<'_>, Levels<'_>)> {
     let buf = json.as_bytes();
+    let p = patterns();
     let mut s = Scanner { buf, pos: 0 };
 
-    s.pos = find_after(buf, 0, b"\"bids\":")?;
+    // Extract lastUpdateId for sequence tracking.
+    let seq = parse_last_update_id(buf);
+
+    s.pos = find_after_simd(buf, 0, &p.bids)?;
     let bids = read_levels(&mut s)?;
 
     // Forward search — starts after bids array, skips ~800 bytes of re-scan.
-    s.pos = find_after(buf, s.pos, b"\"asks\":")?;
+    s.pos = find_after_simd(buf, s.pos, &p.asks)?;
     let asks = read_levels(&mut s)?;
 
-    Some((bids, asks))
+    Some((seq, bids, asks))
+}
+
+/// Parse `lastUpdateId` from Binance depth JSON. Returns 0 if not found.
+///
+/// Uses a lightweight byte scan (pattern is only in Binance payloads, never
+/// ambiguous). Falls back to 0 so callers can still process the book even
+/// if the field format changes.
+#[inline]
+fn parse_last_update_id(buf: &[u8]) -> u64 {
+    static FINDER: std::sync::OnceLock<memmem::Finder<'static>> = std::sync::OnceLock::new();
+    let finder = FINDER.get_or_init(|| memmem::Finder::new(b"\"lastUpdateId\":"));
+    let Some(pos) = find_after_simd(buf, 0, finder) else {
+        return 0;
+    };
+    // Skip whitespace, then parse decimal digits.
+    let mut i = pos;
+    while i < buf.len() && buf[i] == b' ' {
+        i += 1;
+    }
+    let mut val: u64 = 0;
+    while i < buf.len() {
+        let d = buf[i].wrapping_sub(b'0');
+        if d > 9 {
+            break;
+        }
+        val = val.wrapping_mul(10).wrapping_add(u64::from(d));
+        i += 1;
+    }
+    val
 }
 
 /// Walk a Bitstamp `order_book` JSON message and extract event + bids/asks.
 ///
 /// Seeks to `"event":` then forward to `"bids":` and `"asks":` — single pass.
+/// Pattern search uses SIMD (SSE2/AVX2) via `memchr::memmem`.
 /// For non-data events (`subscription_succeeded`, error), bids/asks may not exist
 /// in the payload — returns empty levels.
 #[must_use]
 pub fn walk_bitstamp(json: &str) -> Option<(&str, Levels<'_>, Levels<'_>)> {
     let buf = json.as_bytes();
+    let p = patterns();
     let mut s = Scanner { buf, pos: 0 };
 
     // Extract event string.
-    s.pos = find_after(buf, 0, b"\"event\":")?;
+    s.pos = find_after_simd(buf, 0, &p.event)?;
     let event = s.read_string()?;
 
     // For non-data events, bids/asks may not exist — return empty.
-    let bids = if let Some(pos) = find_after(buf, s.pos, b"\"bids\":") {
+    let bids = if let Some(pos) = find_after_simd(buf, s.pos, &p.bids) {
         s.pos = pos;
         read_levels(&mut s)?
     } else {
         Levels::new()
     };
 
-    let asks = if let Some(pos) = find_after(buf, s.pos, b"\"asks\":") {
+    let asks = if let Some(pos) = find_after_simd(buf, s.pos, &p.asks) {
         s.pos = pos;
         read_levels(&mut s)?
     } else {
@@ -207,7 +256,8 @@ pub fn walk_bitstamp(json: &str) -> Option<(&str, Levels<'_>, Levels<'_>)> {
 #[must_use]
 pub fn extract_string<'a>(json: &'a str, pattern: &[u8]) -> Option<&'a str> {
     let buf = json.as_bytes();
-    let pos = find_after(buf, 0, pattern)?;
+    let finder = memmem::Finder::new(pattern);
+    let pos = find_after_simd(buf, 0, &finder)?;
     let mut s = Scanner { buf, pos };
     s.read_string()
 }
@@ -221,7 +271,8 @@ mod tests {
     #[test]
     fn binance_happy_path() {
         let json = r#"{"lastUpdateId":123,"bids":[["0.06824","12.5"],["0.06823","8.3"],["0.06822","5.0"]],"asks":[["0.06825","10.0"],["0.06826","7.2"],["0.06827","3.5"]]}"#;
-        let (bids, asks) = walk_binance(json).expect("valid JSON");
+        let (seq, bids, asks) = walk_binance(json).expect("valid JSON");
+        assert_eq!(seq, 123);
         assert_eq!(bids.len(), 3);
         assert_eq!(asks.len(), 3);
         assert_eq!(bids[0], ["0.06824", "12.5"]);
@@ -234,7 +285,8 @@ mod tests {
     fn binance_unknown_fields() {
         // Extra fields before, between, and after bids/asks — all skipped by pattern seek.
         let json = r#"{"lastUpdateId":999,"E":1234567890,"bids":[["1.0","2.0"]],"extra":"value","asks":[["3.0","4.0"]],"trailing":true}"#;
-        let (bids, asks) = walk_binance(json).expect("should skip unknown fields");
+        let (seq, bids, asks) = walk_binance(json).expect("should skip unknown fields");
+        assert_eq!(seq, 999);
         assert_eq!(bids.len(), 1);
         assert_eq!(asks.len(), 1);
         assert_eq!(bids[0], ["1.0", "2.0"]);
@@ -244,7 +296,8 @@ mod tests {
     #[test]
     fn binance_empty_levels() {
         let json = r#"{"bids":[],"asks":[]}"#;
-        let (bids, asks) = walk_binance(json).expect("empty arrays are valid");
+        let (seq, bids, asks) = walk_binance(json).expect("empty arrays are valid");
+        assert_eq!(seq, 0); // no lastUpdateId field → 0
         assert!(bids.is_empty());
         assert!(asks.is_empty());
     }
