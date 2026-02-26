@@ -52,7 +52,7 @@ Each exchange adapter connects with `TCP_NODELAY` and `write_buffer_size: 0` for
 
 ### Stage 2: JSON Parse
 
-The custom byte walker (`json_walker.rs`) uses SIMD-accelerated substring search (`memchr::memmem`) to seek directly to `"bids":` and `"asks":` -- skipping all envelope fields without parsing them. Price/quantity strings are borrowed as `&str` slices from the input buffer (zero-copy). The `FixedPoint::parse` function converts decimal strings to `u64` integers with 10^8 scaling -- no intermediate `f64`.
+Each exchange adapter has its own byte walker (~15 lines) matching its specific wire format in a single forward pass. The walkers use SIMD-accelerated substring search (`memchr::memmem`) via shared `Scanner` utilities to seek directly to `"bids":` and `"asks":` -- skipping all envelope fields without parsing them. Price/quantity strings are borrowed as `&str` slices from the input buffer (zero-copy). The `FixedPoint::parse` function converts decimal strings to `u64` integers with 10^8 scaling -- no intermediate `f64`.
 
 **Latency**: ~1.85μs per 20-level snapshot (Criterion median).
 
@@ -62,7 +62,7 @@ The parsed `OrderBook` (stack-allocated `ArrayVec<Level, 20>`) is pushed into th
 
 ### Stage 4: Merge
 
-The merger drains all SPSC consumers before merging -- if both exchanges pushed during the same spin cycle, we merge once with fresh data from both instead of merging twice. The k-way merge uses stack-allocated cursors to interleave pre-sorted bid/ask arrays in O(TOP_N × k) comparisons (~20 for 2 exchanges).
+The merger performs one merge-and-publish per input: every `pop()` from any consumer triggers a fresh merge with the latest data from all exchanges. This ensures no updates are silently collapsed and every book's end-to-end latency is individually recorded. The k-way merge uses stack-allocated cursors to interleave pre-sorted bid/ask arrays in O(TOP_N × k) comparisons (~20 for 2 exchanges).
 
 **Latency**: ~223ns per merge (Criterion median).
 

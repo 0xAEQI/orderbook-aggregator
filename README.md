@@ -97,7 +97,7 @@ See [docs/TRADEOFFS.md](docs/TRADEOFFS.md) for alternatives considered and full 
 ## Testing
 
 ```bash
-cargo test     # 52 tests
+cargo test     # 53 tests
 cargo clippy   # 0 warnings, unsafe_code = "forbid"
 cargo bench    # Criterion benchmarks
 ```
@@ -112,7 +112,7 @@ src/
   lib.rs               Library root -- module declarations
   config.rs            CLI configuration (clap)
   types.rs             Core types: FixedPoint, Level, OrderBook, Summary
-  json_walker.rs       SIMD byte walker for zero-copy JSON parsing
+  json_walker.rs       Shared scanner utilities for zero-copy JSON parsing
   merger.rs            Busy-poll merger with k-way merge and stale eviction
   metrics.rs           Lock-free Prometheus metrics and health endpoint
   server.rs            gRPC service (tonic) with protobuf conversion
@@ -120,8 +120,8 @@ src/
   error.rs             Error types (thiserror)
   exchange/
     mod.rs             Exchange trait, shared utilities (parse, backoff, SPSC push)
-    binance.rs         Binance depth20@100ms WebSocket adapter
-    bitstamp.rs        Bitstamp order_book WebSocket adapter
+    binance.rs         Binance depth20@100ms SIMD byte walker + WebSocket adapter
+    bitstamp.rs        Bitstamp order_book SIMD byte walker + WebSocket adapter
 proto/
   orderbook.proto      gRPC service definition
 docs/

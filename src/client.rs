@@ -247,15 +247,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Init terminal.
     let mut terminal = ratatui::init();
+    terminal.clear()?;
     let _guard = TermGuard;
 
     let mut app = App::new(symbol);
 
     loop {
-        // Draw current state.
-        terminal.draw(|frame| render(frame, &app))?;
-
-        // Poll for gRPC messages or input events.
+        // Wait for next gRPC message or tick for counter refresh.
         tokio::select! {
             msg = stream.message() => {
                 match msg {
@@ -270,8 +268,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
         }
+
+        // Render after state change (or 1s tick for counter refresh).
+        terminal.draw(|frame| render(frame, &app))?;
 
         // Check for quit keys (non-blocking).
         if event::poll(std::time::Duration::ZERO)?

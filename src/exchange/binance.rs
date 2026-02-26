@@ -4,17 +4,56 @@
 //! Pushes parsed [`OrderBook`] snapshots into an SPSC ring buffer -- the push
 //! is a single `store(Release)`, no CAS.
 
+use std::sync::OnceLock;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
 
+use memchr::memmem;
 use rtrb::Producer;
 use tracing::warn;
 
-use crate::json_walker::walk_binance;
+use crate::json_walker::{Scanner, Levels, read_levels};
 use crate::metrics::ExchangeMetrics;
 use crate::types::OrderBook;
 
 use super::{HandleResult, WsHandler};
+
+// ── Per-exchange byte walker ─────────────────────────────────────────────────
+
+struct BinancePatterns {
+    last_update_id: memmem::Finder<'static>,
+    bids: memmem::Finder<'static>,
+    asks: memmem::Finder<'static>,
+}
+
+fn patterns() -> &'static BinancePatterns {
+    static P: OnceLock<BinancePatterns> = OnceLock::new();
+    P.get_or_init(|| BinancePatterns {
+        last_update_id: memmem::Finder::new(b"\"lastUpdateId\":"),
+        bids: memmem::Finder::new(b"\"bids\":"),
+        asks: memmem::Finder::new(b"\"asks\":"),
+    })
+}
+
+/// Single forward pass: lastUpdateId → bids → asks.
+/// Matches Binance depth20 wire format exactly.
+fn walk(json: &str) -> Option<(u64, Levels<'_>, Levels<'_>)> {
+    let p = patterns();
+    let mut s = Scanner::new(json);
+    let seq = if s.seek(&p.last_update_id).is_some() {
+        s.read_u64()
+    } else {
+        s.pos = 0;
+        0
+    };
+    s.seek(&p.bids)?;
+    let bids = read_levels(&mut s)?;
+    s.seek(&p.asks)?;
+    let asks = read_levels(&mut s)?;
+    Some((seq, bids, asks))
+}
+
+// ── WebSocket adapter ────────────────────────────────────────────────────────
 
 /// Binance partial book depth adapter (`depth20@100ms` stream).
 #[derive(Default)]
@@ -46,7 +85,7 @@ impl WsHandler for BinanceHandler {
         metrics: &ExchangeMetrics,
     ) -> HandleResult {
         let t0 = Instant::now();
-        let Some((seq, bids, asks)) = walk_binance(text) else {
+        let Some((seq, bids, asks)) = walk(text) else {
             metrics.errors.fetch_add(1, Relaxed);
             warn!(
                 exchange = "binance",
@@ -86,7 +125,7 @@ impl WsHandler for BinanceHandler {
 /// Decode a Binance `depth20` JSON frame. For benchmarks.
 #[must_use]
 pub fn parse_depth_json(json: &str) -> Option<OrderBook> {
-    let (_seq, bids, asks) = walk_binance(json)?;
+    let (_seq, bids, asks) = walk(json)?;
     super::build_book("binance", &bids, &asks, Instant::now())
 }
 
@@ -146,5 +185,48 @@ mod tests {
         let book = parse_depth_json(json).expect("should ignore unknown fields");
         assert_eq!(book.bids.len(), 1);
         assert_eq!(book.asks.len(), 1);
+    }
+
+    // ── Walker tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn walk_happy_path() {
+        let json = r#"{"lastUpdateId":123,"bids":[["0.06824","12.5"],["0.06823","8.3"],["0.06822","5.0"]],"asks":[["0.06825","10.0"],["0.06826","7.2"],["0.06827","3.5"]]}"#;
+        let (seq, bids, asks) = walk(json).expect("valid JSON");
+        assert_eq!(seq, 123);
+        assert_eq!(bids.len(), 3);
+        assert_eq!(asks.len(), 3);
+        assert_eq!(bids[0], ["0.06824", "12.5"]);
+        assert_eq!(bids[2], ["0.06822", "5.0"]);
+        assert_eq!(asks[0], ["0.06825", "10.0"]);
+        assert_eq!(asks[2], ["0.06827", "3.5"]);
+    }
+
+    #[test]
+    fn walk_unknown_fields() {
+        let json = r#"{"lastUpdateId":999,"E":1234567890,"bids":[["1.0","2.0"]],"extra":"value","asks":[["3.0","4.0"]],"trailing":true}"#;
+        let (seq, bids, asks) = walk(json).expect("should skip unknown fields");
+        assert_eq!(seq, 999);
+        assert_eq!(bids.len(), 1);
+        assert_eq!(asks.len(), 1);
+        assert_eq!(bids[0], ["1.0", "2.0"]);
+        assert_eq!(asks[0], ["3.0", "4.0"]);
+    }
+
+    #[test]
+    fn walk_empty_levels() {
+        let json = r#"{"bids":[],"asks":[]}"#;
+        let (seq, bids, asks) = walk(json).expect("empty arrays are valid");
+        assert_eq!(seq, 0);
+        assert!(bids.is_empty());
+        assert!(asks.is_empty());
+    }
+
+    #[test]
+    fn walk_malformed_returns_none() {
+        assert!(walk("").is_none());
+        assert!(walk("{").is_none());
+        assert!(walk(r#"{"bids": not_an_array}"#).is_none());
+        assert!(walk("null").is_none());
     }
 }

@@ -39,9 +39,9 @@ fn bitstamp_json(n: usize) -> String {
         .map(|i| format!("[\"0.{:08}\", \"{}.00000000\"]", 6825 + i, 10 - (i % 8)))
         .collect();
     format!(
-        r#"{{"event":"data","channel":"order_book_ethbtc","data":{{"timestamp":"1700000000","microtimestamp":"1700000000000000","bids":[{}],"asks":[{}]}}}}"#,
-        bids.join(","),
-        asks.join(",")
+        r#"{{"data":{{"timestamp":"1700000000","microtimestamp":"1700000000000000","bids":[{bids}],"asks":[{asks}]}},"channel":"order_book_ethbtc","event":"data"}}"#,
+        bids = bids.join(","),
+        asks = asks.join(",")
     )
 }
 

@@ -56,7 +56,7 @@ The custom walker skips all of this. It uses `memmem::Finder` objects (precompil
 
 **Result**: ~1.85μs decode vs ~3-4μs with simd-json+serde for equivalent payloads.
 
-**Tradeoff**: Tied to Binance/Bitstamp JSON structure. Adding a new exchange with a different schema requires writing a new walker function (not just a serde struct). However, the pattern is well-established -- each walker is ~15 lines of `seek() + read_*()` calls.
+**Tradeoff**: Each exchange has its own ~15-line `walk()` function matching its specific wire format, co-located with its WebSocket adapter. Adding a new exchange means writing a new walker in the adapter module -- a series of `seek() + read_*()` calls using shared `Scanner` utilities from `json_walker.rs`. The pattern is well-established and self-contained.
 
 ## Dedicated OS Threads over Tokio Tasks
 
