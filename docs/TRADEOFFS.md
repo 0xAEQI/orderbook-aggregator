@@ -124,3 +124,32 @@ At Binance's 100ms update cadence, 5s = ~50 missed snapshots — clearly a disco
 The cost is slightly higher bandwidth (~2KB per snapshot vs ~100 bytes per diff), but the implementation is dramatically simpler and more robust — no state to corrupt, no gaps to recover from.
 
 **Tradeoff**: Higher bandwidth. For 2 exchanges at 10 updates/sec, this is ~40KB/s — negligible. For full L3 market data at 100K updates/sec, diff streams would be necessary.
+
+## `io_uring` Evaluation
+
+**Evaluated**: `io_uring` via `tokio-uring` for WebSocket I/O on the exchange read path.
+
+**Kept**: epoll via `tokio` + `tokio-tungstenite` on dedicated `current_thread` runtimes.
+
+**Why**:
+
+I/O is not the bottleneck. Each exchange sends ~10 messages/second — that's 2 `read()` syscalls/second total across both connections. `io_uring` eliminates syscall overhead by batching submissions through a shared ring buffer with the kernel. At 2 syscalls/second, the total overhead is ~20μs/second — unmeasurable against the process's actual hot path (JSON parsing at 1.85μs per message, merger at ~200ns).
+
+The workload profile is the opposite of where `io_uring` excels:
+
+| `io_uring` strength | This system |
+|---------------------|-------------|
+| 1000s of file descriptors | 2 fds (one per exchange) |
+| 10K+ I/O ops/second | ~20 ops/second |
+| Batched submission (amortize syscalls) | Nothing to batch |
+| Kernel-owned buffers (zero-copy) | Buffers are tiny (~2KB snapshots) |
+
+`tokio-tungstenite` is architecturally incompatible. It uses mio's readiness-based model (epoll): the application owns buffers, gets notified when the fd is ready, then issues `read()`. `io_uring` uses a completion-based model: the kernel owns the buffer until the operation completes. These are fundamentally different memory ownership models. Switching would mean abandoning `tokio-tungstenite` and writing a custom WebSocket implementation on `tokio-uring` or raw `io_uring` — significant complexity for no measurable gain.
+
+The `tokio-uring` crate itself is dormant (last release: November 2022). The Rust `io_uring` ecosystem has matured for file I/O and database engines (TiKV, Glommio) but not for networked application I/O where `tokio` + epoll remains the production standard.
+
+The current architecture already minimizes syscall overhead by design. Each exchange gets a dedicated OS thread with a `current_thread` runtime, so each epoll instance monitors exactly 1 fd. There is no thundering herd, no unnecessary wake-ups, no work-stealing migration. `TCP_NODELAY` + `write_buffer_size: 0` ensure immediate frame delivery.
+
+**Where `io_uring` would help**: High-connection-count servers (1000s of fds), file I/O intensive workloads (database engines, logging), network proxies/load balancers at 10K+ connections, or kernel bypass when DPDK/SPDK are too heavyweight.
+
+**Tradeoff**: Keeping epoll means ~10μs/second of syscall overhead that `io_uring` could theoretically eliminate. At current production latencies (P50=6μs, P99<20μs per message), this is noise — and the alternative requires rewriting the transport layer.
