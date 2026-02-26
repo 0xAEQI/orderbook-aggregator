@@ -1,6 +1,6 @@
 //! Lock-free metrics with Prometheus text exposition and health endpoint.
 //!
-//! All hot-path counters are bare atomics — no mutex, no allocation, no crate.
+//! All hot-path counters are bare atomics -- no mutex, no allocation, no crate.
 //! Each exchange adapter receives its own `Arc<ExchangeMetrics>` at startup;
 //! adding a new exchange is a one-line change in `main.rs`, zero changes here.
 //!
@@ -27,7 +27,7 @@ use tracing::info;
 const NUM_BUCKETS: usize = 16;
 
 /// Upper bounds in nanoseconds + Prometheus `le` label strings.
-/// 1-2-5 logarithmic progression from 100ns to 100ms — covers both
+/// 1-2-5 logarithmic progression from 100ns to 100ms -- covers both
 /// sub-microsecond decode/merge and tail-latency spikes on e2e.
 const BUCKETS: [(u64, &str); NUM_BUCKETS] = [
     (100, "0.0000001"),    // 100ns
@@ -75,7 +75,7 @@ impl PromHistogram {
         }
     }
 
-    /// Record a duration observation — O(1): single atomic increment.
+    /// Record a duration observation -- O(1): single atomic increment.
     ///
     /// Finds the matching bucket via linear scan of the 16-element boundary
     /// table (fits in L1, branch-predicted after warmup) and does one `fetch_add`.
@@ -99,7 +99,7 @@ impl PromHistogram {
 
     /// Render as Prometheus histogram lines.
     ///
-    /// Computes cumulative sums from per-bucket counts — O(k) work on the cold
+    /// Computes cumulative sums from per-bucket counts -- O(k) work on the cold
     /// scrape path (~every 5-15s) instead of on every hot-path `record()`.
     fn render(&self, name: &str, labels: &str, out: &mut String) {
         let mut cumulative = 0u64;
@@ -135,7 +135,7 @@ impl PromHistogram {
 // ---------------------------------------------------------------------------
 
 /// Atomic counters for a single exchange. Allocated once at startup, handed
-/// directly to the adapter — no map lookup, no string matching on the hot path.
+/// directly to the adapter -- no map lookup, no string matching on the hot path.
 pub struct ExchangeMetrics {
     pub name: &'static str,
     pub messages: AtomicU64,
@@ -159,7 +159,7 @@ impl ExchangeMetrics {
 }
 
 // ---------------------------------------------------------------------------
-// Prometheus text format helpers (cold path — runs on /metrics scrape)
+// Prometheus text format helpers (cold path -- runs on /metrics scrape)
 // ---------------------------------------------------------------------------
 
 /// Write `# HELP` + `# TYPE` header lines for a metric.
@@ -357,7 +357,7 @@ pub async fn serve_http(port: u16, metrics: Arc<Metrics>, cancel: CancellationTo
         .ok();
 }
 
-/// `GET /health` — returns `OK`, `DEGRADED`, or `DOWN` based on exchange connectivity.
+/// `GET /health` -- returns `OK`, `DEGRADED`, or `DOWN` based on exchange connectivity.
 async fn health(State(m): State<Arc<Metrics>>) -> (StatusCode, &'static str) {
     let connected = m
         .exchanges
@@ -375,7 +375,7 @@ async fn health(State(m): State<Arc<Metrics>>) -> (StatusCode, &'static str) {
     }
 }
 
-/// `GET /metrics` — Prometheus text exposition format.
+/// `GET /metrics` -- Prometheus text exposition format.
 async fn prom_metrics(State(m): State<Arc<Metrics>>) -> String {
     m.to_prometheus()
 }

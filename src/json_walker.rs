@@ -1,7 +1,7 @@
 //! Custom byte walker for zero-copy JSON parsing.
 //!
 //! Uses SIMD-accelerated substring search (`memchr::memmem`) to seek directly to
-//! `"bids":` and `"asks":` in the JSON buffer — skips all envelope fields without
+//! `"bids":` and `"asks":` in the JSON buffer -- skips all envelope fields without
 //! parsing them. Searches are chained forward (each starts from the scanner's
 //! current position) so the buffer is scanned at most once.
 //!
@@ -10,7 +10,7 @@
 //! `read_levels` would fail and return `None`.
 //!
 //! Input `&str` (guaranteed UTF-8 from WS text frames) is scanned by byte offset;
-//! price/qty strings are returned as `&str` slices — no buffer mutation, no heap
+//! price/qty strings are returned as `&str` slices -- no buffer mutation, no heap
 //! allocation.
 
 use arrayvec::ArrayVec;
@@ -22,7 +22,7 @@ use crate::types::MAX_LEVELS;
 type Levels<'a> = ArrayVec<[&'a str; 2], MAX_LEVELS>;
 
 /// Pre-computed SIMD searchers for JSON key patterns. Built once, reused across
-/// all calls — `memmem::Finder` selects the optimal SIMD algorithm (SSE2/AVX2)
+/// all calls -- `memmem::Finder` selects the optimal SIMD algorithm (SSE2/AVX2)
 /// at construction time based on pattern length and CPU features.
 struct Patterns {
     bids: memmem::Finder<'static>,
@@ -31,7 +31,7 @@ struct Patterns {
     last_update_id: memmem::Finder<'static>,
 }
 
-/// Singleton pattern table — zero runtime cost after first use.
+/// Singleton pattern table -- zero runtime cost after first use.
 fn patterns() -> &'static Patterns {
     use std::sync::OnceLock;
     static P: OnceLock<Patterns> = OnceLock::new();
@@ -87,7 +87,7 @@ impl<'a> Scanner<'a> {
     }
 
     /// SIMD-seek to a key pattern and advance past it. Uses vectorized
-    /// two-byte or multi-byte algorithms from `memchr::memmem` — typically
+    /// two-byte or multi-byte algorithms from `memchr::memmem` -- typically
     /// 4-8× faster than byte-by-byte scanning on `x86_64`.
     #[inline]
     fn seek(&mut self, finder: &memmem::Finder<'_>) -> Option<()> {
@@ -149,7 +149,7 @@ impl<'a> Scanner<'a> {
 
 /// Read an array of `[price, qty]` pairs, keeping the first `N`.
 ///
-/// Once at capacity, returns immediately — the caller's `seek()` will
+/// Once at capacity, returns immediately -- the caller's `seek()` will
 /// skip past the remaining elements to the next key. No drain loop needed:
 /// level data contains only decimal strings, so `"asks":` can never
 /// false-match inside it.
@@ -182,7 +182,7 @@ fn read_levels<'a, const N: usize>(s: &mut Scanner<'a>) -> Option<ArrayVec<[&'a 
             Some(b',') => {
                 s.pos += 1;
                 if levels.len() == N {
-                    // At capacity — bail out. Caller's seek() skips the rest.
+                    // At capacity -- bail out. Caller's seek() skips the rest.
                     return Some(levels);
                 }
             }
@@ -198,19 +198,19 @@ fn read_levels<'a, const N: usize>(s: &mut Scanner<'a>) -> Option<ArrayVec<[&'a 
 /// Walk a Binance `depth20` JSON frame and extract sequence ID + bids/asks.
 ///
 /// Extracts `lastUpdateId` for sequence gap detection, then seeks to `"bids":`
-/// and `"asks":` — single pass. Pattern search uses SIMD (SSE2/AVX2) via
+/// and `"asks":` -- single pass. Pattern search uses SIMD (SSE2/AVX2) via
 /// `memchr::memmem`.
 #[must_use]
 pub fn walk_binance(json: &str) -> Option<(u64, Levels<'_>, Levels<'_>)> {
     let p = patterns();
     let mut s = Scanner::new(json);
 
-    // lastUpdateId is optional — falls back to 0 so callers can still
+    // lastUpdateId is optional -- falls back to 0 so callers can still
     // process the book even if the field format changes.
     let seq = if s.seek(&p.last_update_id).is_some() {
         s.read_u64()
     } else {
-        s.pos = 0; // Reset — lastUpdateId may appear after bids in other formats.
+        s.pos = 0; // Reset -- lastUpdateId may appear after bids in other formats.
         0
     };
 
@@ -225,10 +225,10 @@ pub fn walk_binance(json: &str) -> Option<(u64, Levels<'_>, Levels<'_>)> {
 
 /// Walk a Bitstamp `order_book` JSON message and extract event + bids/asks.
 ///
-/// Seeks to `"event":` then forward to `"bids":` and `"asks":` — single pass.
+/// Seeks to `"event":` then forward to `"bids":` and `"asks":` -- single pass.
 /// Pattern search uses SIMD (SSE2/AVX2) via `memchr::memmem`.
 /// For non-data events (`subscription_succeeded`, error), bids/asks may not exist
-/// in the payload — returns empty levels.
+/// in the payload -- returns empty levels.
 #[must_use]
 pub fn walk_bitstamp(json: &str) -> Option<(&str, Levels<'_>, Levels<'_>)> {
     let p = patterns();
@@ -245,7 +245,7 @@ pub fn walk_bitstamp(json: &str) -> Option<(&str, Levels<'_>, Levels<'_>)> {
 
 /// Extract a string value by key pattern from a JSON payload (cold path).
 ///
-/// Used for error messages, channel names, etc. — not on the hot path.
+/// Used for error messages, channel names, etc. -- not on the hot path.
 /// `pattern` should include the key and colon, e.g. `b"\"message\":"`.
 #[must_use]
 pub fn extract_string<'a>(json: &'a str, pattern: &[u8]) -> Option<&'a str> {
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn binance_unknown_fields() {
-        // Extra fields before, between, and after bids/asks — all skipped by pattern seek.
+        // Extra fields before, between, and after bids/asks -- all skipped by pattern seek.
         let json = r#"{"lastUpdateId":999,"E":1234567890,"bids":[["1.0","2.0"]],"extra":"value","asks":[["3.0","4.0"]],"trailing":true}"#;
         let (seq, bids, asks) = walk_binance(json).expect("should skip unknown fields");
         assert_eq!(seq, 999);
@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn bitstamp_level_capping() {
-        // 50 levels — should keep only MAX_LEVELS (20).
+        // 50 levels -- should keep only MAX_LEVELS (20).
         let levels: Vec<String> = (0..50)
             .map(|i| format!("[\"{}.0\", \"1.0\"]", 100 + i))
             .collect();
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn bitstamp_extra_fields_in_data() {
-        // Extra fields in the data object — skipped by pattern seek.
+        // Extra fields in the data object -- skipped by pattern seek.
         let json = r#"{"event":"data","channel":"order_book_ethbtc","data":{"timestamp":"1700000000","microtimestamp":"1700000000000000","bids":[["3.0","4.0"]],"asks":[["5.0","6.0"]]}}"#;
         let (event, bids, asks) = walk_bitstamp(json).expect("should skip extra data fields");
         assert_eq!(event, "data");

@@ -1,8 +1,8 @@
 //! gRPC server implementing the [`OrderbookAggregator`] service.
 //!
 //! Wraps a `watch::Receiver<Summary>` from the merger and streams updates to
-//! connected clients. Protobuf conversion (`to_proto`) happens here — on the
-//! per-client tokio task — keeping the merger free of serialization overhead.
+//! connected clients. Protobuf conversion (`to_proto`) happens here -- on the
+//! per-client tokio task -- keeping the merger free of serialization overhead.
 
 use std::pin::Pin;
 

@@ -1,6 +1,6 @@
 //! End-to-end integration test: mock exchange data → merger → gRPC → client.
 
-#![allow(clippy::float_cmp)] // Exact f64 values from proto — no arithmetic rounding.
+#![allow(clippy::float_cmp)] // Exact f64 values from proto -- no arithmetic rounding.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

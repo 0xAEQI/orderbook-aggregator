@@ -4,10 +4,10 @@
 //! channel for the configured pair. Bitstamp sends full order book snapshots
 //! on each update (top 100 levels).
 //!
-//! Uses a custom byte walker for zero-copy JSON parsing — scans directly to
+//! Uses a custom byte walker for zero-copy JSON parsing -- scans directly to
 //! `event` and `data.bids`/`data.asks`, borrowing `&str` slices from the WS
 //! frame buffer. Keeps first 20 of 100 levels and skips the rest in a tight
-//! loop — no serde, no simd-json, no `IgnoredAny` overhead.
+//! loop -- no serde, no simd-json, no `IgnoredAny` overhead.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
@@ -57,7 +57,7 @@ impl Exchange for Bitstamp {
             let connect_fut = connect_async_tls_with_config(
                 BITSTAMP_WS_URL,
                 Some(ws_config),
-                true, // TCP_NODELAY — disable Nagle's algorithm for lower latency
+                true, // TCP_NODELAY -- disable Nagle's algorithm for lower latency
                 None,
             );
             match tokio::time::timeout(super::CONNECT_TIMEOUT, connect_fut).await {
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn level_capping_at_max() {
-        // Build a JSON array with 50 levels — more than MAX_LEVELS (20).
+        // Build a JSON array with 50 levels -- more than MAX_LEVELS (20).
         let levels: Vec<String> = (0..50)
             .map(|i| format!("[\"{}.0\", \"1.0\"]", 100 + i))
             .collect();

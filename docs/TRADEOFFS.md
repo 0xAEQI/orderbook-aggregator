@@ -8,7 +8,7 @@ Every major design decision in this system, with alternatives considered and rat
 
 **Over**: `tokio::sync::mpsc`, `crossbeam::channel`, `flume`.
 
-**Why**: SPSC ring buffers have the lowest possible synchronization overhead — a single `store(Release)` for push, a single `load(Acquire)` for pop. No CAS loops, no mutex, no atomic read-modify-write. The tokio `mpsc` channel adds wake-up notifications, semaphore management, and linked-list node allocation. For a pipeline where only the latest value matters (order book snapshots), these costs are pure overhead.
+**Why**: SPSC ring buffers have the lowest possible synchronization overhead -- a single `store(Release)` for push, a single `load(Acquire)` for pop. No CAS loops, no mutex, no atomic read-modify-write. The tokio `mpsc` channel adds wake-up notifications, semaphore management, and linked-list node allocation. For a pipeline where only the latest value matters (order book snapshots), these costs are pure overhead.
 
 The ring is intentionally small (4 slots). For order book data, the latest snapshot supersedes all previous ones. A large ring would cause the merger to drain dozens of stale snapshots after any processing delay. With 4 slots, the merger always processes near-fresh data, and the producer simply drops on full (correct behavior for this data model).
 
@@ -20,25 +20,25 @@ The ring is intentionally small (4 slots). For order book data, the latest snaps
 
 **Over**: `tokio::select!` on channel receivers, `crossbeam::select!`, condvar-based wake-up.
 
-**Why**: Any sleep/wake mechanism adds 1-50μs of latency — the OS must schedule the thread back onto a core, reload caches, and resume execution. For an HFT merger that processes data in ~200ns, this wake-up latency dominates the pipeline. Busy-poll eliminates it entirely: the thread is always running, always cache-warm, and responds within nanoseconds of data arriving.
+**Why**: Any sleep/wake mechanism adds 1-50μs of latency -- the OS must schedule the thread back onto a core, reload caches, and resume execution. For an HFT merger that processes data in ~200ns, this wake-up latency dominates the pipeline. Busy-poll eliminates it entirely: the thread is always running, always cache-warm, and responds within nanoseconds of data arriving.
 
 **Tradeoff**: Burns one CPU core continuously. Acceptable for latency-critical infrastructure. Standard practice in HFT (LMAX Disruptor, Aeron, custom exchange matching engines all use busy-spin).
 
 ## Fixed-Point Integer Prices over `f64`
 
-**Chose**: `FixedPoint(u64)` — 10^8-scaled integer — on the entire hot path.
+**Chose**: `FixedPoint(u64)` -- 10^8-scaled integer -- on the entire hot path.
 
 **Over**: `f64`, `rust_decimal::Decimal`, `bigdecimal::BigDecimal`.
 
 **Why**:
 - **Deterministic ordering**: Integer `cmp` is 1 cycle with no edge cases. `f64::total_cmp` is ~5 cycles and must handle NaN/Inf.
-- **Direct string parse**: Byte scanning straight to integer — no intermediate IEEE 754 conversion, no rounding.
+- **Direct string parse**: Byte scanning straight to integer -- no intermediate IEEE 754 conversion, no rounding.
 - **Exact arithmetic**: No floating-point representation error. `0.1 + 0.2 == 0.3` in fixed-point.
 - **Both exchanges use 8 decimal places**, aligning perfectly with the 10^8 scale factor.
 
 The `rust_decimal` crate would give arbitrary precision but requires 128-bit operations and heap-allocated string conversion. For order book comparison (which only needs `Ord`), the extra precision is unnecessary overhead.
 
-**Tradeoff**: f64 conversion happens at boundaries (Protobuf serialization, TUI display). These are cold paths — the cost is negligible.
+**Tradeoff**: f64 conversion happens at boundaries (Protobuf serialization, TUI display). These are cold paths -- the cost is negligible.
 
 ## Custom SIMD Byte Walker over serde/simd-json
 
@@ -52,11 +52,11 @@ The `rust_decimal` crate would give arbitrary precision but requires 128-bit ope
 3. Allocate `String` and `Vec` for deserialized output
 4. Drain unused fields (Bitstamp sends 100 levels, we keep 20)
 
-The custom walker skips all of this. It uses `memmem::Finder` objects (precompiled SIMD patterns) to jump directly to `"bids":` and `"asks":` — bypassing envelope fields entirely. Price/quantity strings are borrowed as `&str` slices (zero-copy). The walker keeps the first 20 levels and stops — no drain loop for the remaining 80.
+The custom walker skips all of this. It uses `memmem::Finder` objects (precompiled SIMD patterns) to jump directly to `"bids":` and `"asks":` -- bypassing envelope fields entirely. Price/quantity strings are borrowed as `&str` slices (zero-copy). The walker keeps the first 20 levels and stops -- no drain loop for the remaining 80.
 
 **Result**: ~1.85μs decode vs ~3-4μs with simd-json+serde for equivalent payloads.
 
-**Tradeoff**: Tied to Binance/Bitstamp JSON structure. Adding a new exchange with a different schema requires writing a new walker function (not just a serde struct). However, the pattern is well-established — each walker is ~15 lines of `seek() + read_*()` calls.
+**Tradeoff**: Tied to Binance/Bitstamp JSON structure. Adding a new exchange with a different schema requires writing a new walker function (not just a serde struct). However, the pattern is well-established -- each walker is ~15 lines of `seek() + read_*()` calls.
 
 ## Dedicated OS Threads over Tokio Tasks
 
@@ -69,7 +69,7 @@ The custom walker skips all of this. It uses `memmem::Finder` objects (precompil
 - Unpredictable scheduling jitter from other tasks on the runtime
 - Contention on the runtime's shared run queue
 
-By giving each exchange a `current_thread` runtime on a dedicated OS thread, the WS loop runs with warm caches and zero contention. The merger thread goes further — it has no tokio runtime at all.
+By giving each exchange a `current_thread` runtime on a dedicated OS thread, the WS loop runs with warm caches and zero contention. The merger thread goes further -- it has no tokio runtime at all.
 
 **Tradeoff**: 3 OS threads dedicated to this process. Each exchange thread runs its own event loop (no shared I/O reactor). Acceptable for a system with 2 exchanges; would need pooling for 10+.
 
@@ -89,11 +89,11 @@ By giving each exchange a `current_thread` runtime on a dedicated OS thread, the
 
 **Over**: `tokio::sync::broadcast`, `tokio::sync::mpsc`.
 
-**Why**: `watch` has latest-value semantics — receivers always get the most recent value, not a queue of historical values. This is exactly right for order book data where only the current state matters. `send()` is also synchronous, so the merger thread (which has no tokio runtime) can publish without spawning futures.
+**Why**: `watch` has latest-value semantics -- receivers always get the most recent value, not a queue of historical values. This is exactly right for order book data where only the current state matters. `send()` is also synchronous, so the merger thread (which has no tokio runtime) can publish without spawning futures.
 
 `broadcast` would deliver every intermediate value, causing slow clients to buffer unbounded history. `mpsc` would require the merger to know the number of receivers.
 
-**Tradeoff**: `watch` drops intermediate values. A client that takes 100ms to process will skip ~99 updates. For a streaming order book, this is correct behavior — the client wants the latest state, not historical replay.
+**Tradeoff**: `watch` drops intermediate values. A client that takes 100ms to process will skip ~99 updates. For a streaming order book, this is correct behavior -- the client wants the latest state, not historical replay.
 
 ## Stale Book Eviction at 5 Seconds
 
@@ -107,7 +107,7 @@ By giving each exchange a `current_thread` runtime on a dedicated OS thread, the
 - **Too short** (e.g., 500ms): Normal network jitter or brief reconnection would cause unnecessary single-exchange fallback, losing cross-exchange spread accuracy.
 - **Too long** (e.g., 60s): Stale data poisons the merged book for a full minute after disconnect.
 
-At Binance's 100ms update cadence, 5s = ~50 missed snapshots — clearly a disconnect, not transient jitter.
+At Binance's 100ms update cadence, 5s = ~50 missed snapshots -- clearly a disconnect, not transient jitter.
 
 ## Snapshot Streams over Diff/Delta
 
@@ -121,9 +121,9 @@ At Binance's 100ms update cadence, 5s = ~50 missed snapshots — clearly a disco
 - Snapshot + diff synchronization on reconnect
 - Gap detection and recovery
 
-The cost is slightly higher bandwidth (~2KB per snapshot vs ~100 bytes per diff), but the implementation is dramatically simpler and more robust — no state to corrupt, no gaps to recover from.
+The cost is slightly higher bandwidth (~2KB per snapshot vs ~100 bytes per diff), but the implementation is dramatically simpler and more robust -- no state to corrupt, no gaps to recover from.
 
-**Tradeoff**: Higher bandwidth. For 2 exchanges at 10 updates/sec, this is ~40KB/s — negligible. For full L3 market data at 100K updates/sec, diff streams would be necessary.
+**Tradeoff**: Higher bandwidth. For 2 exchanges at 10 updates/sec, this is ~40KB/s -- negligible. For full L3 market data at 100K updates/sec, diff streams would be necessary.
 
 ## `io_uring` Evaluation
 
@@ -133,7 +133,7 @@ The cost is slightly higher bandwidth (~2KB per snapshot vs ~100 bytes per diff)
 
 **Why**:
 
-I/O is not the bottleneck. Each exchange sends ~10 messages/second — that's 2 `read()` syscalls/second total across both connections. `io_uring` eliminates syscall overhead by batching submissions through a shared ring buffer with the kernel. At 2 syscalls/second, the total overhead is ~20μs/second — unmeasurable against the process's actual hot path (JSON parsing at 1.85μs per message, merger at ~200ns).
+I/O is not the bottleneck. Each exchange sends ~10 messages/second -- that's 2 `read()` syscalls/second total across both connections. `io_uring` eliminates syscall overhead by batching submissions through a shared ring buffer with the kernel. At 2 syscalls/second, the total overhead is ~20μs/second -- unmeasurable against the process's actual hot path (JSON parsing at 1.85μs per message, merger at ~200ns).
 
 The workload profile is the opposite of where `io_uring` excels:
 
@@ -144,7 +144,7 @@ The workload profile is the opposite of where `io_uring` excels:
 | Batched submission (amortize syscalls) | Nothing to batch |
 | Kernel-owned buffers (zero-copy) | Buffers are tiny (~2KB snapshots) |
 
-`tokio-tungstenite` is architecturally incompatible. It uses mio's readiness-based model (epoll): the application owns buffers, gets notified when the fd is ready, then issues `read()`. `io_uring` uses a completion-based model: the kernel owns the buffer until the operation completes. These are fundamentally different memory ownership models. Switching would mean abandoning `tokio-tungstenite` and writing a custom WebSocket implementation on `tokio-uring` or raw `io_uring` — significant complexity for no measurable gain.
+`tokio-tungstenite` is architecturally incompatible. It uses mio's readiness-based model (epoll): the application owns buffers, gets notified when the fd is ready, then issues `read()`. `io_uring` uses a completion-based model: the kernel owns the buffer until the operation completes. These are fundamentally different memory ownership models. Switching would mean abandoning `tokio-tungstenite` and writing a custom WebSocket implementation on `tokio-uring` or raw `io_uring` -- significant complexity for no measurable gain.
 
 The `tokio-uring` crate itself is dormant (last release: November 2022). The Rust `io_uring` ecosystem has matured for file I/O and database engines (TiKV, Glommio) but not for networked application I/O where `tokio` + epoll remains the production standard.
 
@@ -152,4 +152,4 @@ The current architecture already minimizes syscall overhead by design. Each exch
 
 **Where `io_uring` would help**: High-connection-count servers (1000s of fds), file I/O intensive workloads (database engines, logging), network proxies/load balancers at 10K+ connections, or kernel bypass when DPDK/SPDK are too heavyweight.
 
-**Tradeoff**: Keeping epoll means ~10μs/second of syscall overhead that `io_uring` could theoretically eliminate. At current production latencies (P50=6μs, P99<20μs per message), this is noise — and the alternative requires rewriting the transport layer.
+**Tradeoff**: Keeping epoll means ~10μs/second of syscall overhead that `io_uring` could theoretically eliminate. At current production latencies (P50=6μs, P99<20μs per message), this is noise -- and the alternative requires rewriting the transport layer.

@@ -1,7 +1,7 @@
 //! Binance partial book depth WebSocket adapter.
 //!
 //! Runs on a dedicated OS thread with its own `current_thread` tokio runtime.
-//! Pushes parsed [`OrderBook`] snapshots into an SPSC ring buffer — the push
+//! Pushes parsed [`OrderBook`] snapshots into an SPSC ring buffer -- the push
 //! is a single `store(Release)`, no CAS.
 
 use std::sync::Arc;
@@ -52,7 +52,7 @@ impl Exchange for Binance {
             let connect_fut = connect_async_tls_with_config(
                 &url,
                 Some(ws_config),
-                true, // TCP_NODELAY — disable Nagle's algorithm for lower latency
+                true, // TCP_NODELAY -- disable Nagle's algorithm for lower latency
                 None,
             );
             match tokio::time::timeout(super::CONNECT_TIMEOUT, connect_fut).await {

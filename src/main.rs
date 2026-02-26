@@ -12,7 +12,7 @@ use orderbook_aggregator::exchange::binance::Binance;
 use orderbook_aggregator::exchange::bitstamp::Bitstamp;
 use orderbook_aggregator::merger;
 
-/// Capacity of each per-exchange SPSC ring buffer. Small by design — for order
+/// Capacity of each per-exchange SPSC ring buffer. Small by design -- for order
 /// book data only the latest snapshot matters. A small ring ensures the merger
 /// processes fresh data after any delay, instead of draining dozens of stale ones.
 const RING_BUFFER_CAPACITY: usize = 4;
@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "starting orderbook aggregator"
     );
 
-    // Bind gRPC listener eagerly — fail fast if port is taken, before spawning
+    // Bind gRPC listener eagerly -- fail fast if port is taken, before spawning
     // exchange connections or background tasks.
     let grpc_listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port)).await?;
     let grpc_addr = grpc_listener.local_addr()?;
@@ -47,11 +47,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cancel = CancellationToken::new();
 
-    // Register metrics — adding a new exchange is a one-line change here.
+    // Register metrics -- adding a new exchange is a one-line change here.
     let metrics = Arc::new(Metrics::register(&["binance", "bitstamp"]));
 
-    // SPSC ring buffers: one per exchange. Small ring — only latest snapshot matters.
-    // Only store(Release) / load(Acquire) — no CAS, no contention.
+    // SPSC ring buffers: one per exchange. Small ring -- only latest snapshot matters.
+    // Only store(Release) / load(Acquire) -- no CAS, no contention.
     let (binance_prod, binance_cons) = rtrb::RingBuffer::new(RING_BUFFER_CAPACITY);
     let (bitstamp_prod, bitstamp_cons) = rtrb::RingBuffer::new(RING_BUFFER_CAPACITY);
 
@@ -60,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- Dedicated OS threads ---
     // Each exchange gets its own OS thread with a single-threaded tokio runtime.
-    // Isolates WS I/O from the main runtime — no work-stealing scheduler jitter.
+    // Isolates WS I/O from the main runtime -- no work-stealing scheduler jitter.
 
     let binance_thread = {
         let metrics = metrics.exchange("binance");
@@ -102,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })?
     };
 
-    // Merger on a dedicated OS thread — plain spin-poll loop, no tokio runtime.
+    // Merger on a dedicated OS thread -- plain spin-poll loop, no tokio runtime.
     let merger_thread = {
         let metrics = metrics.clone();
         let cancel = cancel.clone();

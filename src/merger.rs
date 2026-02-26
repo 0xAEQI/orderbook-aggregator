@@ -1,12 +1,12 @@
 //! Order book merger.
 //!
 //! Runs on a **dedicated OS thread** with a busy-poll loop over per-exchange
-//! SPSC ring buffers (`rtrb`). No tokio runtime, no async overhead — just
+//! SPSC ring buffers (`rtrb`). No tokio runtime, no async overhead -- just
 //! `pop()` + `core::hint::spin_loop()` (PAUSE on x86). Burns one CPU core
 //! for minimum wake-up latency.
 //!
 //! Maintains the latest book per exchange and publishes merged [`Summary`]
-//! snapshots via a `tokio::watch` channel (`send()` is sync — no runtime
+//! snapshots via a `tokio::watch` channel (`send()` is sync -- no runtime
 //! needed).
 //!
 //! Uses a k-way merge of pre-sorted exchange books: `O(TOP_N × k)` comparisons
@@ -29,18 +29,18 @@ use crate::types::{Level, OrderBook, Summary, TOP_N};
 /// Number of exchanges (Binance + Bitstamp). Sizes stack-allocated arrays.
 const MAX_EXCHANGES: usize = 2;
 
-/// Books older than this are evicted before merging — prevents stale data from
+/// Books older than this are evicted before merging -- prevents stale data from
 /// one exchange contaminating the merged output after a disconnect. A crossed
 /// book (negative spread) from 5-second-old data is worse than a single-exchange
 /// book from fresh data.
 ///
 /// 5s tolerates brief network jitter and reconnection delays while remaining
 /// well under the threshold where stale prices create false arbitrage signals.
-/// At Binance's 100ms update cadence, 5s ≈ 50 missed snapshots — clearly a
+/// At Binance's 100ms update cadence, 5s ≈ 50 missed snapshots -- clearly a
 /// disconnect, not transient jitter.
 const STALE_THRESHOLD: Duration = Duration::from_secs(5);
 
-/// Latest book per exchange. Fixed-size array, linear scan — no `HashMap`.
+/// Latest book per exchange. Fixed-size array, linear scan -- no `HashMap`.
 pub struct BookStore {
     books: [Option<OrderBook>; MAX_EXCHANGES],
     names: [&'static str; MAX_EXCHANGES],
@@ -105,7 +105,7 @@ impl BookStore {
 }
 
 /// Runs the merger on a dedicated OS thread. Spin-polls SPSC ring buffers,
-/// merges, and publishes via `watch` (sync send — no tokio runtime needed).
+/// merges, and publishes via `watch` (sync send -- no tokio runtime needed).
 ///
 /// Exits when all producers are dropped or cancellation is signalled.
 pub fn run_spsc(
@@ -114,7 +114,7 @@ pub fn run_spsc(
     metrics: &Metrics,
     cancel: &CancellationToken,
 ) {
-    // Pin to the last available core — isolates the merger from exchange threads
+    // Pin to the last available core -- isolates the merger from exchange threads
     // and tokio workers which naturally spread across the remaining cores.
     // With Docker `cpuset`, this pins to the last core in the allowed set.
     match core_affinity::get_core_ids() {
@@ -244,7 +244,7 @@ pub fn merge(books: &BookStore) -> Summary {
         TOP_N,
     );
 
-    // Spread computed as f64 — goes directly to proto (cold path).
+    // Spread computed as f64 -- goes directly to proto (cold path).
     let spread = match (asks.first(), bids.first()) {
         (Some(ask), Some(bid)) => ask.price.to_f64() - bid.price.to_f64(),
         _ => 0.0,
@@ -254,7 +254,7 @@ pub fn merge(books: &BookStore) -> Summary {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)] // Exact f64 spread from test inputs — no arithmetic rounding.
+#[allow(clippy::float_cmp)] // Exact f64 spread from test inputs -- no arithmetic rounding.
 mod tests {
     use super::*;
     use crate::types::FixedPoint;
@@ -347,7 +347,7 @@ mod tests {
     fn bid_tiebreak_by_amount() {
         let mut books = BookStore::new();
 
-        // Same price from two exchanges — larger amount should come first.
+        // Same price from two exchanges -- larger amount should come first.
         books.insert(book("a", &[level("a", 100.0, 1.0)], &[]));
         books.insert(book("b", &[level("b", 100.0, 5.0)], &[]));
 
@@ -360,7 +360,7 @@ mod tests {
     fn single_exchange_only() {
         let mut books = BookStore::new();
 
-        // Only one exchange connected — common during startup and reconnection.
+        // Only one exchange connected -- common during startup and reconnection.
         books.insert(book(
             "binance",
             &[level("binance", 100.0, 5.0), level("binance", 99.0, 3.0)],
@@ -379,7 +379,7 @@ mod tests {
     fn crossed_book_negative_spread() {
         let mut books = BookStore::new();
 
-        // Exchange A's best bid (102) exceeds Exchange B's best ask (101) — crossed book.
+        // Exchange A's best bid (102) exceeds Exchange B's best ask (101) -- crossed book.
         // Real scenario in multi-exchange aggregation with latency skew.
         books.insert(book(
             "a",
@@ -395,7 +395,7 @@ mod tests {
         let summary = merge(&books);
         assert_eq!(summary.bids[0].price, FixedPoint::from_f64(102.0));
         assert_eq!(summary.asks[0].price, FixedPoint::from_f64(101.0));
-        // Spread is negative — signals an arbitrage opportunity.
+        // Spread is negative -- signals an arbitrage opportunity.
         assert!(summary.spread < 0.0);
         assert!((summary.spread - (-1.0)).abs() < 1e-10);
     }
@@ -404,7 +404,7 @@ mod tests {
     fn ask_tiebreak_by_amount() {
         let mut books = BookStore::new();
 
-        // Same ask price from two exchanges — larger amount should come first.
+        // Same ask price from two exchanges -- larger amount should come first.
         books.insert(book("a", &[], &[level("a", 100.0, 1.0)]));
         books.insert(book("b", &[], &[level("b", 100.0, 5.0)]));
 
@@ -498,7 +498,7 @@ mod tests {
     fn bookstore_insert_overflow() {
         let mut books = BookStore::new();
 
-        // MAX_EXCHANGES is 2 — fill both slots.
+        // MAX_EXCHANGES is 2 -- fill both slots.
         books.insert(book("a", &[level("a", 100.0, 1.0)], &[]));
         books.insert(book("b", &[level("b", 99.0, 1.0)], &[]));
         // Third exchange should be silently dropped.
@@ -529,7 +529,7 @@ mod tests {
             &[level("bitstamp", 102.0, 2.0)],
         ));
 
-        // Evict with current time — neither should be evicted.
+        // Evict with current time -- neither should be evicted.
         books.evict_stale(Instant::now(), STALE_THRESHOLD);
         let summary = merge(&books);
         assert_eq!(summary.bids.len(), 2);

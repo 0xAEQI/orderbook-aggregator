@@ -92,7 +92,7 @@ fn render(frame: &mut Frame, app: &App) {
         return;
     };
 
-    // Cumulative depth per side — stack-allocated, no per-frame heap alloc.
+    // Cumulative depth per side -- stack-allocated, no per-frame heap alloc.
     let ask_cumulative: ArrayVec<f64, MAX_DISPLAY> = {
         let mut cum: ArrayVec<f64, MAX_DISPLAY> = ArrayVec::new();
         let mut total = 0.0;

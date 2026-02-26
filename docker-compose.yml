@@ -18,7 +18,7 @@ services:
       retries: 3
       start_period: 5s
 
-  # TUI client — run interactively: docker compose run --rm client
+  # TUI client -- run interactively: docker compose run --rm client
   client:
     build: .
     entrypoint: ["orderbook-client"]

@@ -1,13 +1,13 @@
 //! Exchange WebSocket adapters.
 //!
 //! Each adapter runs on a **dedicated OS thread** with its own single-threaded
-//! tokio runtime — isolates WS I/O from the main runtime, eliminates
+//! tokio runtime -- isolates WS I/O from the main runtime, eliminates
 //! work-stealing scheduler jitter. Both exchanges provide full snapshots
 //! (not incremental diffs), so no local order book maintenance or sequence
 //! reconciliation is required.
 //!
 //! Adapters push [`OrderBook`] snapshots into a per-exchange **SPSC ring buffer**
-//! (`rtrb`). The ring uses only `store(Release)` / `load(Acquire)` — no CAS,
+//! (`rtrb`). The ring uses only `store(Release)` / `load(Acquire)` -- no CAS,
 //! no contention with the merger thread.
 //!
 //! Connections use `TCP_NODELAY` and `write_buffer_size: 0` for immediate frame
@@ -92,7 +92,7 @@ pub fn build_book(
 }
 
 /// Push book into SPSC ring. Drops on full (stale data is correct to drop for
-/// order books — next snapshot supersedes). Returns `false` if consumer dropped.
+/// order books -- next snapshot supersedes). Returns `false` if consumer dropped.
 #[inline]
 pub fn try_send_book(
     producer: &mut Producer<OrderBook>,
@@ -158,10 +158,10 @@ mod tests {
 
     #[test]
     fn try_send_ring_full_drops() {
-        // 1-slot ring: push one to fill it, then push another — should drop, not error.
+        // 1-slot ring: push one to fill it, then push another -- should drop, not error.
         let (mut producer, _consumer) = rtrb::RingBuffer::new(1);
         assert!(try_send_book(&mut producer, test_book("a"), "a"));
-        // Ring is now full — next push drops the book but returns true.
+        // Ring is now full -- next push drops the book but returns true.
         assert!(try_send_book(&mut producer, test_book("a"), "a"));
     }
 

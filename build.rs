@@ -1,6 +1,6 @@
 //! Regenerates proto types when the `codegen` feature is enabled.
 //!
-//! By default, the checked-in `src/gen/orderbook.rs` is used directly — no
+//! By default, the checked-in `src/gen/orderbook.rs` is used directly -- no
 //! protoc or build-time codegen needed. To regenerate after editing
 //! `proto/orderbook.proto`:
 //!

@@ -135,7 +135,7 @@ fn bench_e2e(c: &mut Criterion) {
 
 criterion_group! {
     name = benches;
-    // 10s measurement, 200 samples, 3s warmup — reduces variance on noisy machines.
+    // 10s measurement, 200 samples, 3s warmup -- reduces variance on noisy machines.
     config = Criterion::default()
         .measurement_time(std::time::Duration::from_secs(10))
         .sample_size(200)

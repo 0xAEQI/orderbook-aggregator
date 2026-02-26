@@ -16,8 +16,8 @@ Configured for stability: 200 samples, 10s measurement, 3s warmup, 3% noise thre
 |-----------|-----------------|--------|--------|
 | `binance_decode_20` | SIMD byte walker + fixed-point for 20-level Binance depth snapshot | 1.85 μs | [1.80, 1.91] |
 | `bitstamp_decode_20` | SIMD byte walker + fixed-point for 20-level Bitstamp order book | 1.85 μs | [1.79, 1.92] |
-| `bitstamp_decode_100` | Same, but 100 levels (production Bitstamp payload) — keeps 20, skips 80 | 1.91 μs | [1.84, 1.98] |
-| `fixed_point_parse` | Byte-scan decimal string to `FixedPoint(u64)` — price + quantity pair | 13.2 ns | [12.9, 13.5] |
+| `bitstamp_decode_100` | Same, but 100 levels (production Bitstamp payload) -- keeps 20, skips 80 | 1.91 μs | [1.84, 1.98] |
+| `fixed_point_parse` | Byte-scan decimal string to `FixedPoint(u64)` -- price + quantity pair | 13.2 ns | [12.9, 13.5] |
 | `merge_2x20` | K-way merge of 2×20 levels into top-10 output | 223 ns | [212, 235] |
 | `e2e_parse_merge` | Full pipeline: Binance 20 + Bitstamp 100 → decode → merge → Summary | **3.34 μs** | [3.23, 3.46] |
 
@@ -25,11 +25,11 @@ Configured for stability: 200 samples, 10s measurement, 3s warmup, 3% noise thre
 
 ### SIMD Skip Efficiency
 
-`bitstamp_decode_100` (1.91μs) is nearly identical to `bitstamp_decode_20` (1.85μs). The SIMD `memmem` search skips the 80 excess levels so fast that buffer size barely affects decode time. The walker reads the first 20 levels and bails out — the subsequent `seek()` to `"asks":` jumps past the remaining data in a single vectorized scan.
+`bitstamp_decode_100` (1.91μs) is nearly identical to `bitstamp_decode_20` (1.85μs). The SIMD `memmem` search skips the 80 excess levels so fast that buffer size barely affects decode time. The walker reads the first 20 levels and bails out -- the subsequent `seek()` to `"asks":` jumps past the remaining data in a single vectorized scan.
 
 ### Fixed-Point Parse Cost
 
-At 13.2ns per price+quantity pair, `FixedPoint::parse` adds ~264ns for a 20-level side (20 pairs). This is ~14% of the total decode time — the rest is SIMD search and JSON structure navigation.
+At 13.2ns per price+quantity pair, `FixedPoint::parse` adds ~264ns for a 20-level side (20 pairs). This is ~14% of the total decode time -- the rest is SIMD search and JSON structure navigation.
 
 ### Merge Dominance
 
@@ -56,7 +56,7 @@ Live production numbers (measured via internal Prometheus histograms with 100ns-
 | **E2E P99** | **sub-20μs** |
 
 The gap between benchmark e2e (3.34μs) and production P50 (6μs) is accounted for by:
-1. WebSocket frame allocation (~1μs) — the `String` from tokio-tungstenite
+1. WebSocket frame allocation (~1μs) -- the `String` from tokio-tungstenite
 2. SPSC ring buffer transfer (~10ns)
 3. `watch::send` notification (~50ns)
 4. Clock reads for metrics recording (~40ns)

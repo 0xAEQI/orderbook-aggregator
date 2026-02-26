@@ -95,7 +95,7 @@ impl FixedPoint {
         self.0 as f64 / Self::SCALE as f64
     }
 
-    /// Create from f64 — convenience for tests and cold-path construction.
+    /// Create from f64 -- convenience for tests and cold-path construction.
     #[inline]
     #[must_use]
     pub fn from_f64(v: f64) -> Self {
@@ -119,7 +119,7 @@ impl fmt::Display for FixedPoint {
     }
 }
 
-/// A single price level from an exchange. `Copy` — no heap, no clone overhead.
+/// A single price level from an exchange. `Copy` -- no heap, no clone overhead.
 #[derive(Debug, Clone, Copy)]
 pub struct Level {
     pub exchange: &'static str,
@@ -135,7 +135,7 @@ pub struct OrderBook {
     pub exchange: &'static str,
     pub bids: ArrayVec<Level, MAX_LEVELS>,
     pub asks: ArrayVec<Level, MAX_LEVELS>,
-    /// When decode started (immediately after WS frame dispatch) — e2e latency anchor.
+    /// When decode started (immediately after WS frame dispatch) -- e2e latency anchor.
     pub decode_start: Instant,
 }
 
@@ -234,13 +234,13 @@ mod tests {
 
     #[test]
     fn parse_trailing_dot() {
-        // "0." — integer part only, dot consumed but no fractional digits.
+        // "0." -- integer part only, dot consumed but no fractional digits.
         assert_eq!(FixedPoint::parse("0.").unwrap(), FixedPoint(0));
     }
 
     #[test]
     fn parse_dot_only() {
-        // "." — no integer part, no fractional digits. Treated as 0.
+        // "." -- no integer part, no fractional digits. Treated as 0.
         assert_eq!(FixedPoint::parse(".").unwrap(), FixedPoint(0));
     }
 

@@ -243,7 +243,7 @@
     },
     {
       "title": "E2E P99.9 (peak)",
-      "description": "Worst P99.9 e2e latency observed in the dashboard time range — tail latency ceiling",
+      "description": "Worst P99.9 e2e latency observed in the dashboard time range -- tail latency ceiling",
       "type": "stat",
       "id": 23,
       "gridPos": { "h": 3, "w": 6, "x": 18, "y": 6 },
@@ -277,7 +277,7 @@
       }
     },
     {
-      "title": "E2E Latency — P50 / P95 / P99 / P99.9",
+      "title": "E2E Latency -- P50 / P95 / P99 / P99.9",
       "description": "End-to-end latency from WebSocket receive to merged orderbook publish. Dashed lines at 1ms (warning) and 10ms (critical).",
       "type": "timeseries",
       "id": 6,
@@ -491,7 +491,7 @@
       "id": 103
     },
     {
-      "title": "Decode Latency — P50 / P95 / P99 / P99.9 (by exchange)",
+      "title": "Decode Latency -- P50 / P95 / P99 / P99.9 (by exchange)",
       "description": "JSON decode + parse latency per exchange. Dashed lines at 1ms (warning) and 10ms (critical).",
       "type": "timeseries",
       "id": 10,
@@ -609,7 +609,7 @@
       "id": 104
     },
     {
-      "title": "Merge Latency — P50 / P95 / P99 / P99.9",
+      "title": "Merge Latency -- P50 / P95 / P99 / P99.9",
       "description": "Order book k-way merge latency. Dashed lines at 1ms (warning) and 10ms (critical).",
       "type": "timeseries",
       "id": 12,

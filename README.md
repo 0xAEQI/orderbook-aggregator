@@ -23,9 +23,9 @@ docker compose up
 ```
 
 Starts the server + monitoring stack:
-- **Server** — gRPC stream on `:50051`
-- **Prometheus** — metrics scraping at [localhost:9091](http://localhost:9091)
-- **Grafana** — pre-built dashboard at [localhost:3000](http://localhost:3000) (anonymous access)
+- **Server** -- gRPC stream on `:50051`
+- **Prometheus** -- metrics scraping at [localhost:9091](http://localhost:9091)
+- **Grafana** -- pre-built dashboard at [localhost:3000](http://localhost:3000) (anonymous access)
 
 TUI client (interactive terminal):
 
@@ -95,12 +95,12 @@ See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for methodology, full results, and 
 
 ## Key Design Choices
 
-- **SPSC ring buffers** — `store(Release)` / `load(Acquire)` only, no CAS, no contention
-- **Busy-poll merger** — `core::hint::spin_loop()` (PAUSE), sub-microsecond wake-up
-- **SIMD JSON walker** — `memchr::memmem` pattern search, zero-copy `&str` borrowing
-- **Fixed-point prices** — `FixedPoint(u64)` with 10^8 scaling, integer `cmp` in merger
-- **Dedicated OS threads** — no work-stealing jitter, no async overhead on merger
-- **Core pinning** — merger auto-pins to last CPU core via `core_affinity`
+- **SPSC ring buffers** -- `store(Release)` / `load(Acquire)` only, no CAS, no contention
+- **Busy-poll merger** -- `core::hint::spin_loop()` (PAUSE), sub-microsecond wake-up
+- **SIMD JSON walker** -- `memchr::memmem` pattern search, zero-copy `&str` borrowing
+- **Fixed-point prices** -- `FixedPoint(u64)` with 10^8 scaling, integer `cmp` in merger
+- **Dedicated OS threads** -- no work-stealing jitter, no async overhead on merger
+- **Core pinning** -- merger auto-pins to last CPU core via `core_affinity`
 
 See [docs/TRADEOFFS.md](docs/TRADEOFFS.md) for alternatives considered and full rationale.
 
@@ -113,7 +113,7 @@ cargo bench    # Criterion benchmarks
 ```
 
 52 tests covering:
-- **Integration**: end-to-end gRPC stream — mock exchange data through SPSC merger to gRPC client
+- **Integration**: end-to-end gRPC stream -- mock exchange data through SPSC merger to gRPC client
 - **Merger**: cross-exchange merging, single-exchange degraded mode, crossed book (negative spread), truncation to top-10, empty book handling, bid/ask tiebreaking by amount, k-way interleave correctness, stale book eviction
 - **BookStore**: insert-overwrites-existing, overflow beyond MAX_EXCHANGES silently dropped, evict_stale keeps fresh books
 - **SPSC ring**: ring-full drops snapshot (returns true), consumer-abandoned returns false
@@ -128,8 +128,8 @@ cargo bench    # Criterion benchmarks
 
 ```
 src/
-  main.rs              Entry point — thread spawning, signal handling, gRPC server
-  lib.rs               Library root — module declarations
+  main.rs              Entry point -- thread spawning, signal handling, gRPC server
+  lib.rs               Library root -- module declarations
   config.rs            CLI configuration (clap)
   types.rs             Core types: FixedPoint, Level, OrderBook, Summary
   json_walker.rs       SIMD byte walker for zero-copy JSON parsing
