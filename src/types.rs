@@ -22,6 +22,9 @@ pub const TOP_N: usize = 10;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
 pub struct FixedPoint(u64);
 
+/// Powers of 10 for fractional digit padding (single multiply instead of loop).
+const POW10: [u64; 9] = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000];
+
 impl FixedPoint {
     pub const SCALE: u64 = 100_000_000; // 10^8
 
@@ -74,12 +77,9 @@ impl FixedPoint {
             }
         }
 
-        // Pad fractional part to 8 digits.
+        // Pad fractional part to 8 digits via lookup table (single multiply).
         // e.g., "0.5" → frac_digits=1, frac_part=5, pad by 10^7 → 50_000_000
-        let pad = 8 - frac_digits;
-        for _ in 0..pad {
-            frac_part *= 10;
-        }
+        frac_part *= POW10[(8 - frac_digits) as usize];
 
         let value = int_part.checked_mul(Self::SCALE)?.checked_add(frac_part)?;
         Some(Self(value))
@@ -217,6 +217,12 @@ mod tests {
         let a = FixedPoint::parse("0.06824000").unwrap();
         let b = FixedPoint::parse("0.06825000").unwrap();
         assert!(a < b);
+    }
+
+    #[test]
+    fn parse_rejects_overflow() {
+        // u64::MAX / SCALE ≈ 184_467_440_737, so this overflows.
+        assert!(FixedPoint::parse("999999999999999").is_none());
     }
 
     #[test]

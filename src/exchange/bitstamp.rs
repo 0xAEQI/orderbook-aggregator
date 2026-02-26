@@ -14,7 +14,6 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
 
 use futures_util::{SinkExt, StreamExt};
-use serde_json::json;
 use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async_tls_with_config;
 use tokio_tungstenite::tungstenite::Message;
@@ -69,14 +68,11 @@ impl Exchange for Bitstamp {
                     let (mut write, mut read) = ws_stream.split();
 
                     // Subscribe to order book channel.
-                    let subscribe = json!({
-                        "event": "bts:subscribe",
-                        "data": {
-                            "channel": &channel
-                        }
-                    });
+                    let subscribe = format!(
+                        r#"{{"event":"bts:subscribe","data":{{"channel":"{channel}"}}}}"#
+                    );
 
-                    if let Err(e) = write.send(Message::Text(subscribe.to_string())).await {
+                    if let Err(e) = write.send(Message::Text(subscribe)).await {
                         self.metrics.errors.fetch_add(1, Relaxed);
                         error!(exchange = "bitstamp", error = %e, "subscribe failed");
                         self.metrics.connected.store(false, Relaxed);
@@ -116,8 +112,11 @@ impl Exchange for Bitstamp {
                                                 }
                                                 "bts:error" => {
                                                     self.metrics.errors.fetch_add(1, Relaxed);
+                                                    let msg = crate::json_walker::extract_string(&text, b"\"message\":")
+                                                        .unwrap_or("unknown");
                                                     error!(
                                                         exchange = "bitstamp",
+                                                        message = msg,
                                                         "server error"
                                                     );
                                                     break;

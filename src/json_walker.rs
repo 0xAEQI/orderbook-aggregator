@@ -204,6 +204,18 @@ pub fn walk_bitstamp(json: &str) -> Option<(&str, Levels<'_>, Levels<'_>)> {
     Some((event, bids, asks))
 }
 
+/// Extract a string value by key pattern from a JSON payload (cold path).
+///
+/// Used for error messages, channel names, etc. — not on the hot path.
+/// `pattern` should include the key and colon, e.g. `b"\"message\":"`.
+#[must_use]
+pub fn extract_string<'a>(json: &'a str, pattern: &[u8]) -> Option<&'a str> {
+    let buf = json.as_bytes();
+    let pos = find_after(buf, 0, pattern)?;
+    let mut s = Scanner { buf, pos };
+    s.read_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

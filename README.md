@@ -223,8 +223,9 @@ cargo bench
 
 | Benchmark | What it measures | Typical |
 |-----------|-----------------|---------|
-| `binance_decode_20` | Byte walker + fixed-point for 20-level Binance depth snapshot | ~2.0μs |
-| `bitstamp_decode_20` | Byte walker + fixed-point for 20-level Bitstamp order book | ~2.2μs |
+| `binance_decode_20` | Byte walker + fixed-point for 20-level Binance depth snapshot | ~1.8μs |
+| `bitstamp_decode_20` | Byte walker + fixed-point for 20-level Bitstamp order book | ~1.7μs |
+| `bitstamp_decode_100` | Same, but 100 levels (production Bitstamp payload) — keeps 20, skips 80 | ~3.3μs |
 | `fixed_point_parse` | Byte-scan decimal string to `FixedPoint(u64)` — price + quantity pair | ~13ns |
-| `merge_2x20` | K-way merge of 2×20 levels into top-10 output | ~190ns |
-| `e2e_parse_merge` | Full pipeline: 2× JSON decode → merge → Summary | ~4.4μs |
+| `merge_2x20` | K-way merge of 2×20 levels into top-10 output | ~250ns |
+| `e2e_parse_merge` | Full pipeline: Binance 20 + Bitstamp 100 → decode → merge → Summary | ~4.4μs |

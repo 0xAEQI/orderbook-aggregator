@@ -119,7 +119,7 @@ fn bench_merge(c: &mut Criterion) {
 
 fn bench_e2e(c: &mut Criterion) {
     let binance = binance_json(20);
-    let bitstamp = bitstamp_json(20);
+    let bitstamp = bitstamp_json(100); // Bitstamp sends 100 levels in production.
 
     c.bench_function("e2e_parse_merge", |b| {
         b.iter(|| {
