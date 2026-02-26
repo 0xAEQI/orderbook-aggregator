@@ -28,6 +28,7 @@ struct Patterns {
     bids: memmem::Finder<'static>,
     asks: memmem::Finder<'static>,
     event: memmem::Finder<'static>,
+    last_update_id: memmem::Finder<'static>,
 }
 
 /// Singleton pattern table — zero runtime cost after first use.
@@ -38,6 +39,7 @@ fn patterns() -> &'static Patterns {
         bids: memmem::Finder::new(b"\"bids\":"),
         asks: memmem::Finder::new(b"\"asks\":"),
         event: memmem::Finder::new(b"\"event\":"),
+        last_update_id: memmem::Finder::new(b"\"lastUpdateId\":"),
     })
 }
 
@@ -53,6 +55,7 @@ fn find_after_simd(buf: &[u8], start: usize, finder: &memmem::Finder<'_>) -> Opt
 /// Byte scanner that tracks position in an input buffer.
 struct Scanner<'a> {
     buf: &'a [u8],
+    src: &'a str,
     pos: usize,
 }
 
@@ -95,16 +98,9 @@ impl<'a> Scanner<'a> {
         while self.pos < self.buf.len() {
             match self.buf[self.pos] {
                 b'"' => {
-                    let s = &self.buf[start..self.pos];
+                    let result = self.src.get(start..self.pos)?;
                     self.pos += 1;
-                    // SAFETY: `buf` originates from `&str::as_bytes()` (guaranteed UTF-8
-                    // by WebSocket text frame contract). `s` is a subslice of `buf`, so
-                    // it is valid UTF-8. Debug builds verify this invariant.
-                    #[allow(unsafe_code)]
-                    {
-                        debug_assert!(std::str::from_utf8(s).is_ok());
-                        return Some(unsafe { std::str::from_utf8_unchecked(s) });
-                    }
+                    return Some(result);
                 }
                 b'\\' => self.pos += 2,
                 _ => self.pos += 1,
@@ -171,10 +167,10 @@ fn read_levels<'a, const N: usize>(s: &mut Scanner<'a>) -> Option<ArrayVec<[&'a 
 pub fn walk_binance(json: &str) -> Option<(u64, Levels<'_>, Levels<'_>)> {
     let buf = json.as_bytes();
     let p = patterns();
-    let mut s = Scanner { buf, pos: 0 };
+    let mut s = Scanner { buf, src: json, pos: 0 };
 
     // Extract lastUpdateId for sequence tracking.
-    let seq = parse_last_update_id(buf);
+    let seq = parse_last_update_id(buf, p);
 
     s.pos = find_after_simd(buf, 0, &p.bids)?;
     let bids = read_levels(&mut s)?;
@@ -192,10 +188,8 @@ pub fn walk_binance(json: &str) -> Option<(u64, Levels<'_>, Levels<'_>)> {
 /// ambiguous). Falls back to 0 so callers can still process the book even
 /// if the field format changes.
 #[inline]
-fn parse_last_update_id(buf: &[u8]) -> u64 {
-    static FINDER: std::sync::OnceLock<memmem::Finder<'static>> = std::sync::OnceLock::new();
-    let finder = FINDER.get_or_init(|| memmem::Finder::new(b"\"lastUpdateId\":"));
-    let Some(pos) = find_after_simd(buf, 0, finder) else {
+fn parse_last_update_id(buf: &[u8], p: &Patterns) -> u64 {
+    let Some(pos) = find_after_simd(buf, 0, &p.last_update_id) else {
         return 0;
     };
     // Skip whitespace, then parse decimal digits.
@@ -225,7 +219,7 @@ fn parse_last_update_id(buf: &[u8]) -> u64 {
 pub fn walk_bitstamp(json: &str) -> Option<(&str, Levels<'_>, Levels<'_>)> {
     let buf = json.as_bytes();
     let p = patterns();
-    let mut s = Scanner { buf, pos: 0 };
+    let mut s = Scanner { buf, src: json, pos: 0 };
 
     // Extract event string.
     s.pos = find_after_simd(buf, 0, &p.event)?;
@@ -258,7 +252,7 @@ pub fn extract_string<'a>(json: &'a str, pattern: &[u8]) -> Option<&'a str> {
     let buf = json.as_bytes();
     let finder = memmem::Finder::new(pattern);
     let pos = find_after_simd(buf, 0, &finder)?;
-    let mut s = Scanner { buf, pos };
+    let mut s = Scanner { buf, src: json, pos };
     s.read_string()
 }
 

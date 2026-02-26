@@ -1,7 +1,9 @@
 //! Exchange WebSocket adapters.
 //!
 //! Each adapter connects to an exchange's depth stream, parses updates into
-//! [`OrderBook`] snapshots, and publishes them via an mpsc channel.
+//! [`OrderBook`] snapshots, and publishes them via an mpsc channel. Both
+//! exchanges provide full snapshots (not incremental diffs), so no local
+//! order book maintenance or sequence reconciliation is required.
 //!
 //! Connections use `TCP_NODELAY` to eliminate Nagle's algorithm delay and
 //! `write_buffer_size: 0` for immediate WebSocket frame flushing.
@@ -23,6 +25,12 @@ use crate::types::{FixedPoint, Level, MAX_LEVELS, OrderBook};
 
 /// Connection timeout for WebSocket handshake.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Maximum reconnection backoff (shared across all adapters).
+const MAX_BACKOFF_MS: u64 = 30_000;
+
+/// Initial reconnection backoff before exponential increase.
+const INITIAL_BACKOFF_MS: u64 = 1_000;
 
 /// Exchange adapter. Handles reconnection internally; respects cancellation.
 pub trait Exchange: Send + Sync + 'static {

@@ -15,6 +15,9 @@ use orderbook_aggregator::server::{
 use orderbook_aggregator::types::{self, Summary};
 use orderbook_aggregator::merger;
 
+/// Capacity of the mpsc channel between exchange adapters and the merger.
+const BOOK_CHANNEL_CAPACITY: usize = 64;
+
 fn spawn_exchange(
     exchange: impl Exchange,
     name: &'static str,
@@ -58,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let metrics = Arc::new(Metrics::register(&["binance", "bitstamp"]));
 
     // mpsc channel for exchange → merger (move semantics, no broadcast clone overhead).
-    let (book_tx, book_rx) = mpsc::channel::<types::OrderBook>(64);
+    let (book_tx, book_rx) = mpsc::channel::<types::OrderBook>(BOOK_CHANNEL_CAPACITY);
 
     // Watch channel for merger → gRPC server (latest-value semantics).
     let (summary_tx, summary_rx) = watch::channel(Summary::default());
@@ -109,13 +112,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             server_cancel.cancelled().await;
         });
 
-    // Ctrl+C handler.
+    // Shutdown signal handler (SIGINT + SIGTERM).
     let shutdown_cancel = cancel.clone();
     tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            let mut sigterm = tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::terminate(),
+            )
+            .expect("failed to register SIGTERM handler");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = sigterm.recv() => {},
+            }
+        }
+        #[cfg(not(unix))]
         tokio::signal::ctrl_c()
             .await
             .expect("failed to listen for ctrl+c");
-        info!("received ctrl+c, shutting down");
+        info!("received shutdown signal, draining");
         shutdown_cancel.cancel();
     });
 

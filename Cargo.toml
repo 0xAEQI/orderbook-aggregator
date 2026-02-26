@@ -42,7 +42,7 @@ codegen = ["dep:tonic-build"]
 tonic-build = { version = "0.12", optional = true }
 
 [lints.rust]
-unsafe_code = "warn"
+unsafe_code = "forbid"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

@@ -213,4 +213,27 @@ mod tests {
         let fp = FixedPoint::parse("0.068240001").unwrap();
         assert_eq!(fp.raw(), 6_824_000);
     }
+
+    #[test]
+    fn parse_zero() {
+        assert_eq!(FixedPoint::parse("0").unwrap(), FixedPoint(0));
+    }
+
+    #[test]
+    fn parse_trailing_dot() {
+        // "0." — integer part only, dot consumed but no fractional digits.
+        assert_eq!(FixedPoint::parse("0.").unwrap(), FixedPoint(0));
+    }
+
+    #[test]
+    fn parse_dot_only() {
+        // "." — no integer part, no fractional digits. Treated as 0.
+        assert_eq!(FixedPoint::parse(".").unwrap(), FixedPoint(0));
+    }
+
+    #[test]
+    fn parse_leading_zeros() {
+        let fp = FixedPoint::parse("00.1").unwrap();
+        assert_eq!(fp.raw(), 10_000_000);
+    }
 }

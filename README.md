@@ -212,10 +212,10 @@ For a production-grade system at Keyrock-level latency requirements, the followi
 cargo test
 ```
 
-35 tests covering:
+39 tests covering:
 - **Integration**: end-to-end gRPC stream — mock exchange data through merger to gRPC client
 - **Merger**: cross-exchange merging, single-exchange degraded mode, crossed book (negative spread), truncation to top-10, empty book handling, bid and ask tiebreaking by amount, k-way merge interleave correctness, stale book eviction
-- **FixedPoint**: parse formats (integer, fractional, leading dot, truncation), rejection of invalid input and overflow, f64 roundtrip, ordering, display
+- **FixedPoint**: parse formats (integer, fractional, leading dot, trailing dot, dot-only, leading zeros, zero, truncation), rejection of invalid input and overflow, f64 roundtrip, ordering, display
 - **JSON walker**: Binance/Bitstamp happy path, unknown field tolerance, empty levels, non-data events, level capping at 20, malformed JSON rejection
 - **Binance parser**: realistic depth20 JSON payload, unknown field tolerance
 - **Bitstamp parser**: data message parsing, non-data event handling, level capping at 20

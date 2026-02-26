@@ -28,7 +28,6 @@ use crate::types::OrderBook;
 use super::Exchange;
 
 const BITSTAMP_WS_URL: &str = "wss://ws.bitstamp.net";
-const MAX_BACKOFF_MS: u64 = 30_000;
 
 /// Bitstamp `order_book` channel adapter (full snapshots, top 100 levels).
 pub struct Bitstamp {
@@ -47,7 +46,7 @@ impl Exchange for Bitstamp {
             r#"{{"event":"bts:subscribe","data":{{"channel":"{channel}"}}}}"#
         );
         let ws_config = super::ws_config();
-        let mut backoff_ms = 1000u64;
+        let mut backoff_ms = super::INITIAL_BACKOFF_MS;
 
         loop {
             if cancel.is_cancelled() {
@@ -56,8 +55,12 @@ impl Exchange for Bitstamp {
 
             info!(exchange = "bitstamp", url = BITSTAMP_WS_URL, "connecting");
 
-            let connect_fut =
-                connect_async_tls_with_config(BITSTAMP_WS_URL, Some(ws_config), true, None);
+            let connect_fut = connect_async_tls_with_config(
+                BITSTAMP_WS_URL,
+                Some(ws_config),
+                true, // TCP_NODELAY — disable Nagle's algorithm for lower latency
+                None,
+            );
             match tokio::time::timeout(super::CONNECT_TIMEOUT, connect_fut).await {
                 Err(_) => {
                     self.metrics.errors.fetch_add(1, Relaxed);
@@ -66,7 +69,7 @@ impl Exchange for Bitstamp {
                 Ok(Ok((ws_stream, _))) => {
                     info!(exchange = "bitstamp", "connected");
                     self.metrics.connected.store(true, Relaxed);
-                    backoff_ms = 1000;
+                    backoff_ms = super::INITIAL_BACKOFF_MS;
 
                     let (mut write, mut read) = ws_stream.split();
 
@@ -77,7 +80,7 @@ impl Exchange for Bitstamp {
                         continue;
                     }
 
-                    info!(exchange = "bitstamp", %channel, "subscribed");
+                    info!(exchange = "bitstamp", %channel, "subscribe requested");
 
                     loop {
                         let text = tokio::select! {
@@ -104,7 +107,11 @@ impl Exchange for Bitstamp {
                         let t0 = Instant::now();
                         let Some((event, bids, asks)) = walk_bitstamp(&text) else {
                             self.metrics.errors.fetch_add(1, Relaxed);
-                            warn!(exchange = "bitstamp", "parse error");
+                            warn!(
+                                exchange = "bitstamp",
+                                payload_head = &text[..text.len().min(200)],
+                                "parse error"
+                            );
                             continue;
                         };
                         match event {
@@ -146,7 +153,7 @@ impl Exchange for Bitstamp {
                 return Ok(());
             }
 
-            if !super::backoff_sleep(&mut backoff_ms, MAX_BACKOFF_MS, "bitstamp", &cancel).await {
+            if !super::backoff_sleep(&mut backoff_ms, super::MAX_BACKOFF_MS, "bitstamp", &cancel).await {
                 return Ok(());
             }
         }
