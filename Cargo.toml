@@ -55,7 +55,7 @@ module_name_repetitions = "allow"
 cast_possible_truncation = "allow" # Duration::as_nanos() → u64: max ~584 years
 cast_precision_loss    = "allow" # nanos u64 → f64: acceptable for display
 ignored_unit_patterns  = "allow" # `_ = cancel.cancelled()` is idiomatic tokio::select!
-too_many_lines         = "allow" # exchange adapters are inherently long (reconnect loops)
+too_many_lines         = "allow" # client TUI render + integration test exceed 100-line limit
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
