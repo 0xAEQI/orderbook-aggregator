@@ -110,6 +110,19 @@ pub fn run_spsc(
     metrics: &Metrics,
     cancel: &CancellationToken,
 ) {
+    // Pin to the last available core — isolates the merger from exchange threads
+    // and tokio workers which naturally spread across the remaining cores.
+    // With Docker `cpuset`, this pins to the last core in the allowed set.
+    if let Some(cores) = core_affinity::get_core_ids()
+        && let Some(&core) = cores.last()
+    {
+        if core_affinity::set_for_current(core) {
+            info!(core_id = core.id, "merger pinned to core");
+        } else {
+            warn!("failed to pin merger to core");
+        }
+    }
+
     let mut books = BookStore::new();
 
     info!("merger started (SPSC busy-poll, {} consumers)", consumers.len());

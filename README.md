@@ -212,11 +212,19 @@ Each exchange adapter and the merger run on dedicated OS threads, isolated from 
 - **Merger thread**: Plain OS thread with no tokio runtime at all. The busy-poll loop calls `consumer.pop()` + `core::hint::spin_loop()` directly — no async state machine, no future polling overhead. One dedicated core for minimum wake-up latency.
 - **Main thread**: Multi-threaded tokio runtime handles gRPC serving and metrics HTTP — these are cold paths that benefit from work-stealing for concurrent client connections.
 
+## Core Pinning
+
+The merger thread auto-pins to the last available CPU core at startup via `core_affinity`. Combined with Docker `cpuset`, this isolates the merger from exchange threads and tokio workers:
+
+```yaml
+# docker-compose.yml — adjust to your host's topology
+cpuset: "0-3"   # merger pins to core 3, exchange + tokio use 0-2
+```
+
+For maximum isolation on a dedicated host, add `isolcpus=3` to the kernel boot parameters. This prevents the OS scheduler from placing *any* other work on core 3 — the merger gets the entire core with zero preemption.
+
 ## Production Considerations
 
-For a production-grade system beyond what's appropriate for a take-home:
-
-- **Core pinning + `isolcpus`** — Pin the merger to an isolated CPU core. Combined with SPSC + spin-poll, this would eliminate OS scheduler preemption and give deterministic sub-microsecond wake-up latency.
 - **Kernel bypass I/O** — `io_uring` or DPDK for the WebSocket path, eliminating ~10-50μs of kernel network stack overhead per frame.
 
 ## Running Tests

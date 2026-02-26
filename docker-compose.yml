@@ -7,6 +7,10 @@ services:
     environment:
       - RUST_LOG=info
     command: ["--symbol", "ethbtc", "--port", "50051", "--metrics-port", "9090"]
+    # Pin to specific cores for latency isolation. The merger thread auto-pins
+    # to the last core in the set; exchange threads + tokio use the rest.
+    # Adjust range to your host's topology (nproc to check available cores).
+    cpuset: "0-3"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
       interval: 10s
