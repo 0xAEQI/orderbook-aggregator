@@ -159,6 +159,31 @@ impl ExchangeMetrics {
 }
 
 // ---------------------------------------------------------------------------
+// Prometheus text format helpers (cold path — runs on /metrics scrape)
+// ---------------------------------------------------------------------------
+
+/// Write `# HELP` + `# TYPE` header lines for a metric.
+fn write_header(out: &mut String, name: &str, help: &str, metric_type: &str) {
+    writeln!(out, "# HELP {name} {help}").unwrap();
+    writeln!(out, "# TYPE {name} {metric_type}").unwrap();
+}
+
+/// Write a per-exchange metric: header + one line per exchange.
+fn write_per_exchange(
+    out: &mut String,
+    name: &str,
+    help: &str,
+    metric_type: &str,
+    exchanges: &[Arc<ExchangeMetrics>],
+    value: impl Fn(&ExchangeMetrics) -> u64,
+) {
+    write_header(out, name, help, metric_type);
+    for ex in exchanges {
+        writeln!(out, "{name}{{exchange=\"{}\"}} {}", ex.name, value(ex)).unwrap();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Global metrics registry
 // ---------------------------------------------------------------------------
 
@@ -209,82 +234,58 @@ impl Metrics {
     pub fn to_prometheus(&self) -> String {
         let mut out = String::with_capacity(4096);
 
-        // -- Per-exchange counters (dynamic) --
-        writeln!(
-            out,
-            "# HELP orderbook_messages_total WebSocket messages received"
-        )
-        .unwrap();
-        writeln!(out, "# TYPE orderbook_messages_total counter").unwrap();
-        for ex in &self.exchanges {
-            writeln!(
-                out,
-                "orderbook_messages_total{{exchange=\"{}\"}} {}",
-                ex.name,
-                ex.messages.load(Relaxed)
-            )
-            .unwrap();
-        }
+        // Per-exchange counters.
+        write_per_exchange(
+            &mut out,
+            "orderbook_messages_total",
+            "WebSocket messages received",
+            "counter",
+            &self.exchanges,
+            |ex| ex.messages.load(Relaxed),
+        );
+        write_per_exchange(
+            &mut out,
+            "orderbook_errors_total",
+            "Parse/connection errors",
+            "counter",
+            &self.exchanges,
+            |ex| ex.errors.load(Relaxed),
+        );
+        write_per_exchange(
+            &mut out,
+            "orderbook_reconnections_total",
+            "WebSocket reconnection attempts",
+            "counter",
+            &self.exchanges,
+            |ex| ex.reconnections.load(Relaxed),
+        );
 
-        writeln!(out, "# HELP orderbook_errors_total Parse/connection errors").unwrap();
-        writeln!(out, "# TYPE orderbook_errors_total counter").unwrap();
-        for ex in &self.exchanges {
-            writeln!(
-                out,
-                "orderbook_errors_total{{exchange=\"{}\"}} {}",
-                ex.name,
-                ex.errors.load(Relaxed)
-            )
-            .unwrap();
-        }
-
-        writeln!(
-            out,
-            "# HELP orderbook_reconnections_total WebSocket reconnection attempts"
-        )
-        .unwrap();
-        writeln!(out, "# TYPE orderbook_reconnections_total counter").unwrap();
-        for ex in &self.exchanges {
-            writeln!(
-                out,
-                "orderbook_reconnections_total{{exchange=\"{}\"}} {}",
-                ex.name,
-                ex.reconnections.load(Relaxed)
-            )
-            .unwrap();
-        }
-
-        writeln!(
-            out,
-            "# HELP orderbook_merges_total Order book merge operations"
-        )
-        .unwrap();
-        writeln!(out, "# TYPE orderbook_merges_total counter").unwrap();
+        // Global counter.
+        write_header(
+            &mut out,
+            "orderbook_merges_total",
+            "Order book merge operations",
+            "counter",
+        );
         writeln!(out, "orderbook_merges_total {}", self.merges.load(Relaxed)).unwrap();
 
-        // -- Per-exchange gauges (dynamic) --
-        writeln!(
-            out,
-            "# HELP orderbook_exchange_up Exchange connection status (1=connected)"
-        )
-        .unwrap();
-        writeln!(out, "# TYPE orderbook_exchange_up gauge").unwrap();
-        for ex in &self.exchanges {
-            writeln!(
-                out,
-                "orderbook_exchange_up{{exchange=\"{}\"}} {}",
-                ex.name,
-                u8::from(ex.connected.load(Relaxed))
-            )
-            .unwrap();
-        }
+        // Per-exchange gauge.
+        write_per_exchange(
+            &mut out,
+            "orderbook_exchange_up",
+            "Exchange connection status (1=connected)",
+            "gauge",
+            &self.exchanges,
+            |ex| u64::from(ex.connected.load(Relaxed)),
+        );
 
-        writeln!(
-            out,
-            "# HELP orderbook_uptime_seconds Seconds since process start"
-        )
-        .unwrap();
-        writeln!(out, "# TYPE orderbook_uptime_seconds gauge").unwrap();
+        // Global gauge.
+        write_header(
+            &mut out,
+            "orderbook_uptime_seconds",
+            "Seconds since process start",
+            "gauge",
+        );
         writeln!(
             out,
             "orderbook_uptime_seconds {}",
@@ -292,31 +293,35 @@ impl Metrics {
         )
         .unwrap();
 
-        // -- Per-exchange histograms (dynamic) --
-        writeln!(
-            out,
-            "# HELP orderbook_decode_duration_seconds WebSocket message decode latency"
-        )
-        .unwrap();
-        writeln!(out, "# TYPE orderbook_decode_duration_seconds histogram").unwrap();
+        // Per-exchange histograms.
+        write_header(
+            &mut out,
+            "orderbook_decode_duration_seconds",
+            "WebSocket message decode latency",
+            "histogram",
+        );
         for ex in &self.exchanges {
             let labels = format!("exchange=\"{}\"", ex.name);
             ex.decode_latency
                 .render("orderbook_decode_duration_seconds", &labels, &mut out);
         }
 
-        // -- Global histograms --
-        writeln!(
-            out,
-            "# HELP orderbook_merge_duration_seconds Order book merge latency"
-        )
-        .unwrap();
-        writeln!(out, "# TYPE orderbook_merge_duration_seconds histogram").unwrap();
+        // Global histograms.
+        write_header(
+            &mut out,
+            "orderbook_merge_duration_seconds",
+            "Order book merge latency",
+            "histogram",
+        );
         self.merge_latency
             .render("orderbook_merge_duration_seconds", "", &mut out);
 
-        writeln!(out, "# HELP orderbook_e2e_duration_seconds End-to-end latency: WS receive to merged summary published").unwrap();
-        writeln!(out, "# TYPE orderbook_e2e_duration_seconds histogram").unwrap();
+        write_header(
+            &mut out,
+            "orderbook_e2e_duration_seconds",
+            "End-to-end latency: WS receive to merged summary published",
+            "histogram",
+        );
         self.e2e_latency
             .render("orderbook_e2e_duration_seconds", "", &mut out);
 
@@ -379,40 +384,32 @@ async fn prom_metrics(State(m): State<Arc<Metrics>>) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn health_all_connected_ok() {
+    #[tokio::test]
+    async fn health_all_connected_ok() {
         let metrics = Arc::new(Metrics::register(&["binance", "bitstamp"]));
         metrics.exchange("binance").connected.store(true, Relaxed);
         metrics.exchange("bitstamp").connected.store(true, Relaxed);
 
-        let (status, body) = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(health(State(metrics)));
+        let (status, body) = health(State(metrics)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, "OK\n");
     }
 
-    #[test]
-    fn health_partial_degraded() {
+    #[tokio::test]
+    async fn health_partial_degraded() {
         let metrics = Arc::new(Metrics::register(&["binance", "bitstamp"]));
         metrics.exchange("binance").connected.store(true, Relaxed);
-        // bitstamp remains disconnected (default false).
 
-        let (status, body) = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(health(State(metrics)));
+        let (status, body) = health(State(metrics)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, "DEGRADED\n");
     }
 
-    #[test]
-    fn health_none_down() {
+    #[tokio::test]
+    async fn health_none_down() {
         let metrics = Arc::new(Metrics::register(&["binance", "bitstamp"]));
-        // Both disconnected (default).
 
-        let (status, body) = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(health(State(metrics)));
+        let (status, body) = health(State(metrics)).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(body, "DOWN\n");
     }
