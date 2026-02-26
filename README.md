@@ -139,21 +139,20 @@ The merged order book puts **best deals first**:
 
 The entire path from WebSocket frame receipt through merge output is zero-allocation:
 
-- **`Level`** is `Copy` (`&'static str` + `f64` + `f64`) — no heap, no clone
+- **`Level`** is `Copy` (`&'static str` + `FixedPoint` + `FixedPoint`) — no heap, no clone
 - **`OrderBook`** bids/asks use `ArrayVec<Level, 20>` — stack-allocated, fixed capacity
 - **`Summary`** bids/asks use `ArrayVec<Level, 10>` — stack-allocated merged output
 - **Exchange → merger channel** uses `tokio::sync::mpsc` with move semantics — the `OrderBook` value is transferred, not cloned
-- **JSON deserialization** borrows `[&str; 2]` pairs into stack-allocated `ArrayVec` — no `String` or `Vec` allocation
+- **JSON parsing** borrows `[&str; 2]` pairs via byte-offset tracking into stack-allocated `ArrayVec` — no `String` or `Vec` allocation
 - **Exchange book store** uses a fixed `[Option<OrderBook>; 2]` array with linear scan — no `HashMap` hashing or heap allocation
 
 The only remaining allocations are the WebSocket frame `String` (from tokio-tungstenite, unavoidable without kernel bypass) and Protobuf encoding on the gRPC egress path (cold, per-client).
 
-### SIMD-Accelerated JSON + Float Parsing
+### Custom Byte Walker + Fixed-Point Integer Parsing
 
-- **simd-json**: AVX2/SSE4.2 vectorized tokenizer — classifies 32 bytes per instruction vs 1 byte for scalar `serde_json`. Drop-in via serde `Deserialize`.
-- **Zero-copy `#[serde(borrow)]`**: `[&str; 2]` price/qty pairs borrowed directly from the WS frame buffer. No `String` allocation.
-- **fast-float**: Eisel-Lemire float parsing — 2-3x faster than `str::parse::<f64>()`.
-- **Bitstamp level cap**: Custom serde visitor deserializes only the first 20 of 100 levels, draining the rest with `IgnoredAny` — avoids creating 160 unused serde objects per message.
+- **Custom byte walker**: Hand-written JSON scanner (`json_walker.rs`) that walks directly to `bids`/`asks` arrays by key name, skipping envelope fields. Eliminates simd-json + serde overhead (~30-40% from visitor dispatch, field matching, and drain loops). Zero-copy `&str` borrowing via byte offset tracking — no buffer mutation needed.
+- **`FixedPoint::parse`**: Direct string-to-integer byte scanning — parses decimal strings into `u64` with 10^8 scaling. No intermediate `f64`, no IEEE 754 rounding. Both Binance and Bitstamp use 8 decimal places, aligning perfectly with the 10^8 scale factor.
+- **Bitstamp level cap**: `read_levels::<MAX_LEVELS>()` keeps the first 20 of 100 levels and skips the rest in a tight byte-scanning loop — no serde `IgnoredAny` overhead.
 
 ### K-Way Merge
 
@@ -165,7 +164,7 @@ The Prometheus histogram stores per-bucket (non-cumulative) counts across 16 log
 
 ### Build Configuration
 
-`.cargo/config.toml` sets `target-cpu=native`, enabling AVX2/SSE4.2 instructions for `simd-json`'s vectorized JSON tokenizer. The release profile uses `lto = "fat"` for whole-program link-time optimization across all crates, `codegen-units = 1` for maximum inlining across compilation units, and `strip = true` to reduce binary size.
+`.cargo/config.toml` sets `target-cpu=native` for optimal instruction selection. The release profile uses `lto = "fat"` for whole-program link-time optimization across all crates, `codegen-units = 1` for maximum inlining across compilation units, and `strip = true` to reduce binary size.
 
 ## Design Decisions
 
@@ -174,9 +173,16 @@ The Prometheus histogram stores per-bucket (non-cumulative) counts across 16 log
 - **`tokio::sync::mpsc`** (exchange → merger): Move semantics — the `OrderBook` is transferred without cloning. Combined with `ArrayVec`-based types, the entire transfer is a stack-value move. Adapters use `try_send` to avoid blocking the WebSocket read loop when the channel is full — for order book data, dropping a stale snapshot is correct since the next frame contains a newer one.
 - **`tokio::watch`** (merger → gRPC): Latest-value semantics. Clients always get the most recent merged state. For order book data, intermediate states between reads are stale and irrelevant — only the current top-of-book matters.
 
-### Floating-Point Prices
+### Fixed-Point Integer Prices
 
-Prices use `f64` to match the gRPC proto's `double` type. For a production system handling order matching or PnL accounting, a fixed-point integer representation would be preferred to avoid IEEE 754 rounding — but for aggregation and display of best-of-book levels, `f64`'s 15-16 significant digits exceed the precision of any crypto exchange.
+Prices and amounts use `FixedPoint(u64)` — a 10^8-scaled integer — on the entire hot path (parse → merge → publish). This gives:
+
+- **Integer `cmp` in the merger** — 1 cycle vs ~5 for `f64::total_cmp`, no NaN/Inf edge cases
+- **Direct string → integer parse** — byte scanning, no intermediate `f64`
+- **Exact arithmetic** — no IEEE 754 floating-point rounding
+- **f64 only at boundaries** — proto serialization and TUI display (cold paths)
+
+Both Binance and Bitstamp use 8 decimal places, aligning perfectly with the 10^8 scale factor. The proto wire format stays `double` — conversion via `to_f64()` happens once per level at the gRPC egress (already a cold path).
 
 ### Protobuf Conversion at the Edge
 
@@ -190,11 +196,9 @@ Exponential backoff (1s → 30s) with random jitter to prevent thundering herd o
 
 For a production-grade system at Keyrock-level latency requirements, the following changes would move the needle beyond what's appropriate for a take-home:
 
-- **Fixed-point integer prices** — `u64` scaled by 10^8, eliminating `f64` comparison overhead (~5 cycles → 1 cycle per comparison) and IEEE 754 rounding risk. String-to-integer conversion via branch-free byte scanning.
 - **SPSC ring buffers** — One lock-free ring per exchange (e.g., `rtrb`), replacing `mpsc`. Single-producer single-consumer requires only `store(Release)` / `load(Acquire)` — no CAS, no contention.
 - **Core pinning + `isolcpus`** — Pin the merger to an isolated CPU core. Combined with SPSC, this enables a busy-wait spin loop (`try_recv` + `PAUSE`) that eliminates both OS thread wake-up latency and tokio scheduler jitter.
 - **Kernel bypass I/O** — `io_uring` or DPDK for the WebSocket path, eliminating ~10-50μs of kernel network stack overhead per frame.
-- **Custom JSON walker** — Replace simd-json + serde with a hand-written byte scanner that walks directly to the `bids`/`asks` arrays, skipping envelope fields and avoiding the serde deserialization framework entirely.
 
 ## Running Tests
 
@@ -202,9 +206,10 @@ For a production-grade system at Keyrock-level latency requirements, the followi
 cargo test
 ```
 
-14 tests covering:
+25 tests covering:
 - **Integration**: end-to-end gRPC stream — mock exchange data through merger to gRPC client
 - **Merger**: cross-exchange merging, single-exchange degraded mode, crossed book (negative spread), truncation to top-10, empty book handling, bid and ask tiebreaking by amount, k-way merge interleave correctness
+- **FixedPoint**: parse formats (integer, fractional, leading dot, truncation), rejection of invalid input, f64 roundtrip, ordering, display
 - **Binance parser**: realistic depth20 JSON payload, unknown field tolerance
 - **Bitstamp parser**: data message parsing, non-data event handling, custom deserializer cap at 20 levels
 
@@ -218,8 +223,8 @@ cargo bench
 
 | Benchmark | What it measures | Typical |
 |-----------|-----------------|---------|
-| `binance_decode_20` | simd-json parse + fast-float for 20-level Binance depth snapshot | ~3.5μs |
-| `bitstamp_decode_20` | simd-json parse + fast-float for 20-level Bitstamp order book | ~3.9μs |
-| `fast_float_parse` | Eisel-Lemire float parse of a price + quantity pair | ~16ns |
-| `merge_2x20` | K-way merge of 2×20 levels into top-10 output | ~310ns |
-| `e2e_parse_merge` | Full pipeline: 2× JSON decode → merge → Summary | ~7.7μs |
+| `binance_decode_20` | Byte walker + fixed-point for 20-level Binance depth snapshot | ~2.0μs |
+| `bitstamp_decode_20` | Byte walker + fixed-point for 20-level Bitstamp order book | ~2.2μs |
+| `fixed_point_parse` | Byte-scan decimal string to `FixedPoint(u64)` — price + quantity pair | ~13ns |
+| `merge_2x20` | K-way merge of 2×20 levels into top-10 output | ~190ns |
+| `e2e_parse_merge` | Full pipeline: 2× JSON decode → merge → Summary | ~4.4μs |

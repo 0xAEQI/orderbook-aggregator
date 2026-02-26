@@ -6,6 +6,7 @@
 pub mod config;
 pub mod error;
 pub mod exchange;
+pub mod json_walker;
 pub mod merger;
 pub mod metrics;
 pub mod server;
