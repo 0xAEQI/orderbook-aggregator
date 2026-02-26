@@ -13,6 +13,8 @@ Built for latency: **6μs P50, sub-20μs P99** end-to-end (WS frame received →
 | [Architecture](docs/ARCHITECTURE.md) | Thread model, data flow, latency budget, memory layout, core pinning |
 | [Benchmarks](docs/BENCHMARKS.md) | Criterion results, production latency, hardware sensitivity, how to reproduce |
 | [Design Tradeoffs](docs/TRADEOFFS.md) | Every major decision with alternatives considered and rationale |
+| [Monitoring](docs/MONITORING.md) | Prometheus metrics, Grafana dashboard, health endpoint |
+| [Testing](docs/TESTING.md) | 52-test suite, coverage breakdown, CI |
 
 ## Quick Start
 
@@ -60,26 +62,14 @@ grpcurl -plaintext -import-path proto -proto orderbook.proto \
 
 ## Monitoring
 
-Grafana dashboard shows: exchange connectivity, messages/sec, errors/sec, decode/merge/e2e latency histograms (P50/P99/P99.9), uptime.
+Health and Prometheus metrics on the metrics port. Grafana dashboard included in Docker stack.
 
 ```bash
 curl localhost:9090/health    # OK, DEGRADED, or DOWN
 curl localhost:9090/metrics   # Prometheus text format
 ```
 
-Exposed metrics:
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `orderbook_messages_total{exchange}` | Counter | WebSocket messages received |
-| `orderbook_errors_total{exchange}` | Counter | Parse/connection errors |
-| `orderbook_reconnections_total{exchange}` | Counter | Reconnection attempts |
-| `orderbook_merges_total` | Counter | Merge operations |
-| `orderbook_exchange_up{exchange}` | Gauge | Connection status (1=up) |
-| `orderbook_uptime_seconds` | Gauge | Process uptime |
-| `orderbook_decode_duration_seconds{exchange}` | Histogram | JSON decode latency |
-| `orderbook_merge_duration_seconds` | Histogram | Merge latency |
-| `orderbook_e2e_duration_seconds` | Histogram | End-to-end latency |
+See [docs/MONITORING.md](docs/MONITORING.md) for the full metrics table and dashboard details.
 
 ## Performance Summary
 
@@ -112,17 +102,7 @@ cargo clippy   # 0 warnings, unsafe_code = "forbid"
 cargo bench    # Criterion benchmarks
 ```
 
-52 tests covering:
-- **Integration**: end-to-end gRPC stream -- mock exchange data through SPSC merger to gRPC client
-- **Merger**: cross-exchange merging, single-exchange degraded mode, crossed book (negative spread), truncation to top-10, empty book handling, bid/ask tiebreaking by amount, k-way interleave correctness, stale book eviction
-- **BookStore**: insert-overwrites-existing, overflow beyond MAX_EXCHANGES silently dropped, evict_stale keeps fresh books
-- **SPSC ring**: ring-full drops snapshot (returns true), consumer-abandoned returns false
-- **Health endpoint**: all-connected → OK, partial → DEGRADED, none → DOWN (503)
-- **Histogram**: record + render produces correct cumulative bucket counts, sum, and count
-- **FixedPoint**: parse formats (integer, fractional, leading dot, trailing dot, dot-only, leading zeros, zero, truncation), rejection of invalid input and overflow, f64 roundtrip, ordering, display
-- **JSON walker**: Binance/Bitstamp happy path, unknown field tolerance, empty levels, non-data events, level capping at 20, malformed JSON rejection
-- **Exchange parsers**: realistic payloads, unknown field tolerance, level capping
-- **Config**: symbol validation (empty, special chars, case normalization)
+See [docs/TESTING.md](docs/TESTING.md) for the full coverage breakdown and CI details.
 
 ## Project Structure
 
@@ -148,4 +128,6 @@ docs/
   ARCHITECTURE.md      Thread model, data flow, latency budget
   BENCHMARKS.md        Criterion results, production latency, reproduction
   TRADEOFFS.md         Design decisions with alternatives and rationale
+  MONITORING.md        Prometheus metrics, Grafana dashboard, health endpoint
+  TESTING.md           Test suite coverage breakdown, CI
 ```
