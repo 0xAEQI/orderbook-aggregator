@@ -127,31 +127,34 @@ pub fn run_spsc(
         }
 
         let mut got_any = false;
+        let mut latest_decode_start = Instant::now();
 
-        // Round-robin poll: one pop per consumer per iteration for fairness.
+        // Drain all available snapshots before merging. If both exchanges pushed
+        // in the same spin cycle, we merge once with the freshest data from each
+        // instead of merging twice (first with stale data from the other).
         for consumer in &mut consumers {
-            if let Ok(book) = consumer.pop() {
+            while let Ok(book) = consumer.pop() {
                 got_any = true;
-                let decode_start = book.decode_start;
+                latest_decode_start = book.decode_start;
                 books.insert(book);
-
-                let t0 = Instant::now();
-                books.evict_stale(t0, STALE_THRESHOLD);
-                let summary = merge(&books);
-                metrics.merge_latency.record(t0.elapsed());
-                metrics.merges.fetch_add(1, Relaxed);
-                debug!(
-                    spread = summary.spread,
-                    bids = summary.bids.len(),
-                    asks = summary.asks.len(),
-                    "merged"
-                );
-                let _ = summary_tx.send(summary);
-                metrics.e2e_latency.record(decode_start.elapsed());
             }
         }
 
-        if !got_any {
+        if got_any {
+            let t0 = Instant::now();
+            books.evict_stale(t0, STALE_THRESHOLD);
+            let summary = merge(&books);
+            metrics.merge_latency.record(t0.elapsed());
+            metrics.merges.fetch_add(1, Relaxed);
+            debug!(
+                spread = summary.spread,
+                bids = summary.bids.len(),
+                asks = summary.asks.len(),
+                "merged"
+            );
+            let _ = summary_tx.send(summary);
+            metrics.e2e_latency.record(latest_decode_start.elapsed());
+        } else {
             core::hint::spin_loop();
         }
     }

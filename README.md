@@ -9,13 +9,13 @@ Real-time order book aggregator that connects to **Binance** and **Bitstamp** We
 ```
 OS Thread "ws-binance"                  OS Thread "merger"
 ┌─────────────────────┐                ┌──────────────────────┐
-│ current_thread      │   SPSC(64)     │ busy-poll (PAUSE)    │    Main Thread
+│ current_thread      │   SPSC(4)     │ busy-poll (PAUSE)    │    Main Thread
 │ tokio runtime       │──rtrb::push──▶│ pop() both rings     │    ┌──────────┐
 │ WS → parse → push   │                │ merge → publish      │──▶│  tonic   │──▶ Client
 └─────────────────────┘                └──────────────────────┘    │  gRPC    │──▶ Client
                                                 ▲    │watch       └──────────┘
 OS Thread "ws-bitstamp"                         │
-┌─────────────────────┐   SPSC(64)              │    ┌──────────────────────────────┐
+┌─────────────────────┐   SPSC(4)              │    ┌──────────────────────────────┐
 │ current_thread      │──rtrb::push─────────────┘    │  HTTP :9090                  │
 │ tokio runtime       │                              │  GET /health → OK/DEGRADED   │
 │ WS → parse → push   │                              │  GET /metrics → Prometheus   │
@@ -180,7 +180,7 @@ The Prometheus histogram stores per-bucket (non-cumulative) counts across 16 log
 
 ### Channel Architecture
 
-- **SPSC ring buffers** (exchange → merger): One lock-free `rtrb` ring per exchange (64 slots). The producer does a single `store(Release)`, the consumer a single `load(Acquire)` — no CAS, no contention, no tokio wake-up. On a full ring, the producer drops the stale snapshot (correct for order book data — the next frame supersedes it).
+- **SPSC ring buffers** (exchange → merger): One lock-free `rtrb` ring per exchange (4 slots). The producer does a single `store(Release)`, the consumer a single `load(Acquire)` — no CAS, no contention, no tokio wake-up. On a full ring, the producer drops the stale snapshot (correct for order book data — the next frame supersedes it). Small ring by design — ensures the merger processes fresh data after any delay instead of draining dozens of stale snapshots.
 - **`tokio::watch`** (merger → gRPC): Latest-value semantics. `send()` is synchronous — the merger thread publishes without needing a tokio runtime. Clients always get the most recent merged state.
 - **Busy-poll merger**: The merger thread polls all SPSC consumers in round-robin with `core::hint::spin_loop()` (PAUSE on x86, ~10ns) when idle. Burns one CPU core for sub-microsecond wake-up latency — the standard approach for latency-critical HFT pipelines.
 

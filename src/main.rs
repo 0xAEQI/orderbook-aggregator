@@ -12,8 +12,10 @@ use orderbook_aggregator::exchange::bitstamp::Bitstamp;
 use orderbook_aggregator::exchange::Exchange;
 use orderbook_aggregator::merger;
 
-/// Capacity of each per-exchange SPSC ring buffer.
-const RING_BUFFER_CAPACITY: usize = 64;
+/// Capacity of each per-exchange SPSC ring buffer. Small by design — for order
+/// book data only the latest snapshot matters. A small ring ensures the merger
+/// processes fresh data after any delay, instead of draining 64 stale snapshots.
+const RING_BUFFER_CAPACITY: usize = 4;
 use orderbook_aggregator::metrics::{self, Metrics};
 use orderbook_aggregator::server::{
     OrderbookService, proto::orderbook_aggregator_server::OrderbookAggregatorServer,
@@ -48,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register metrics — adding a new exchange is a one-line change here.
     let metrics = Arc::new(Metrics::register(&["binance", "bitstamp"]));
 
-    // SPSC ring buffers: one per exchange, 64 slots each.
+    // SPSC ring buffers: one per exchange. Small ring — only latest snapshot matters.
     // Only store(Release) / load(Acquire) — no CAS, no contention.
     let (binance_prod, binance_cons) = rtrb::RingBuffer::new(RING_BUFFER_CAPACITY);
     let (bitstamp_prod, bitstamp_cons) = rtrb::RingBuffer::new(RING_BUFFER_CAPACITY);
