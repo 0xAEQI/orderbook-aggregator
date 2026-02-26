@@ -9,7 +9,7 @@ Real-time order book aggregator that connects to **Binance** and **Bitstamp** We
 ```
 OS Thread "ws-binance"                  OS Thread "merger"
 ┌─────────────────────┐                ┌──────────────────────┐
-│ current_thread      │   SPSC(64)     │ spin-then-yield poll │    Main Thread
+│ current_thread      │   SPSC(64)     │ busy-poll (PAUSE)    │    Main Thread
 │ tokio runtime       │──rtrb::push──▶│ pop() both rings     │    ┌──────────┐
 │ WS → parse → push   │                │ merge → publish      │──▶│  tonic   │──▶ Client
 └─────────────────────┘                └──────────────────────┘    │  gRPC    │──▶ Client
@@ -24,7 +24,7 @@ OS Thread "ws-bitstamp"                         │
 
 **Thread architecture:**
 - Each exchange adapter runs on a **dedicated OS thread** with its own single-threaded tokio runtime — isolates WS I/O, eliminates work-stealing scheduler jitter
-- The merger runs on a **dedicated OS thread** with a spin-then-yield poll loop — no tokio runtime, no async overhead
+- The merger runs on a **dedicated OS thread** with a busy-poll loop — no tokio runtime, no async overhead, burns one core for minimum latency
 - gRPC + metrics HTTP run on the main multi-threaded tokio runtime (cold path)
 
 **Data flow:**
@@ -182,7 +182,7 @@ The Prometheus histogram stores per-bucket (non-cumulative) counts across 16 log
 
 - **SPSC ring buffers** (exchange → merger): One lock-free `rtrb` ring per exchange (64 slots). The producer does a single `store(Release)`, the consumer a single `load(Acquire)` — no CAS, no contention, no tokio wake-up. On a full ring, the producer drops the stale snapshot (correct for order book data — the next frame supersedes it).
 - **`tokio::watch`** (merger → gRPC): Latest-value semantics. `send()` is synchronous — the merger thread publishes without needing a tokio runtime. Clients always get the most recent merged state.
-- **Spin-then-yield merger**: The merger thread polls all SPSC consumers in round-robin with an adaptive backoff: `spin_loop()` (PAUSE, ~10ns) for the first 1,000 idle iterations, `yield_now()` for the next 4,000, then `sleep(100μs)`. This gives sub-microsecond wake-up when data arrives during spin phase, while avoiding 100% CPU burn between exchange ticks (~100ms apart).
+- **Busy-poll merger**: The merger thread polls all SPSC consumers in round-robin with `core::hint::spin_loop()` (PAUSE on x86, ~10ns) when idle. Burns one CPU core for sub-microsecond wake-up latency — the standard approach for latency-critical HFT pipelines.
 
 ### Fixed-Point Integer Prices
 
@@ -208,7 +208,7 @@ Exponential backoff (1s → 30s) with random jitter to prevent thundering herd o
 Each exchange adapter and the merger run on dedicated OS threads, isolated from the main tokio multi-threaded runtime:
 
 - **Exchange threads**: Each gets its own `current_thread` tokio runtime — no work-stealing scheduler, no cross-thread task migration. The WS read loop runs with minimal scheduling jitter.
-- **Merger thread**: Plain OS thread with no tokio runtime at all. The spin-poll loop calls `consumer.pop()` + `core::hint::spin_loop()` directly — no async state machine, no future polling overhead.
+- **Merger thread**: Plain OS thread with no tokio runtime at all. The busy-poll loop calls `consumer.pop()` + `core::hint::spin_loop()` directly — no async state machine, no future polling overhead. One dedicated core for minimum wake-up latency.
 - **Main thread**: Multi-threaded tokio runtime handles gRPC serving and metrics HTTP — these are cold paths that benefit from work-stealing for concurrent client connections.
 
 ## Production Considerations

@@ -97,10 +97,7 @@ pub fn try_send_book(
         return false;
     }
     match producer.push(book) {
-        Ok(()) => {
-            crate::merger::notify();
-            true
-        }
+        Ok(()) => true,
         Err(rtrb::PushError::Full(_)) => {
             tracing::warn!(exchange, "ring full, dropping snapshot");
             true
