@@ -148,34 +148,34 @@ pub fn run_spsc(
             break;
         }
 
-        // Drain all available snapshots before merging. If both exchanges pushed
-        // in the same spin cycle, we merge once with the freshest data from each
-        // instead of merging twice (first with stale data from the other).
-        let mut latest_decode_start: Option<Instant> = None;
+        // One merge + publish per input: every exchange update produces a new
+        // merged summary on the gRPC stream. This ensures no updates are silently
+        // collapsed and every book's E2E latency is individually recorded.
+        // Round-robin across consumers for fairness.
+        let mut got_any = false;
         for consumer in &mut consumers {
-            while let Ok(book) = consumer.pop() {
-                latest_decode_start = Some(book.decode_start);
+            if let Ok(book) = consumer.pop() {
+                got_any = true;
+                let decode_start = book.decode_start;
                 books.insert(book);
+
+                let t0 = Instant::now();
+                books.evict_stale(t0, STALE_THRESHOLD);
+                let summary = merge(&books);
+                metrics.merge_latency.record(t0.elapsed());
+                metrics.merges.fetch_add(1, Relaxed);
+                debug!(
+                    spread = summary.spread,
+                    bids = summary.bids.len(),
+                    asks = summary.asks.len(),
+                    "merged"
+                );
+                let _ = summary_tx.send(summary);
+                metrics.e2e_latency.record(decode_start.elapsed());
             }
         }
 
-        if let Some(decode_start) = latest_decode_start {
-            let t0 = Instant::now();
-            books.evict_stale(t0, STALE_THRESHOLD);
-            let active: ArrayVec<&str, MAX_EXCHANGES> = books.iter().map(|b| b.exchange).collect();
-            let summary = merge(&books);
-            metrics.merge_latency.record(t0.elapsed());
-            metrics.merges.fetch_add(1, Relaxed);
-            debug!(
-                spread = summary.spread,
-                bids = summary.bids.len(),
-                asks = summary.asks.len(),
-                exchanges = ?active,
-                "merged"
-            );
-            let _ = summary_tx.send(summary);
-            metrics.e2e_latency.record(decode_start.elapsed());
-        } else {
+        if !got_any {
             core::hint::spin_loop();
         }
     }
