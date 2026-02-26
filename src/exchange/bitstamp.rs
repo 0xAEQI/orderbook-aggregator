@@ -14,7 +14,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
 
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
+use rtrb::Producer;
 use tokio_tungstenite::connect_async_tls_with_config;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
@@ -39,7 +39,7 @@ impl Exchange for Bitstamp {
     async fn connect(
         &self,
         symbol: String,
-        sender: mpsc::Sender<OrderBook>,
+        mut producer: Producer<OrderBook>,
         cancel: CancellationToken,
     ) -> Result<()> {
         let channel = format!("order_book_{}", symbol.to_lowercase());
@@ -116,7 +116,7 @@ impl Exchange for Bitstamp {
                                 };
                                 self.metrics.decode_latency.record(t0.elapsed());
                                 self.metrics.messages.fetch_add(1, Relaxed);
-                                if !super::try_send_book(&sender, book, "bitstamp") {
+                                if !super::try_send_book(&mut producer, book, "bitstamp") {
                                     return Ok(());
                                 }
                             }

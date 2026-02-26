@@ -7,26 +7,31 @@ Real-time order book aggregator that connects to **Binance** and **Bitstamp** We
 ## Architecture
 
 ```
-WebSocket Feeds              Merger               gRPC Server
-┌──────────┐                ┌───────┐            ┌──────────┐
-│ Binance  │──mpsc(move)──▶│       │──watch──▶  │          │──stream──▶ Client
-│ depth20  │                │ Merge │            │  tonic   │──stream──▶ Client
-│          │                │ Top10 │            │          │
-│ Bitstamp │──mpsc(move)──▶│       │            │          │
-│ order_book│               └───────┘            └──────────┘
-└──────────┘
-          ┌──────────────────────────────┐
-          │  HTTP :9090                  │
-          │  GET /health → OK/DEGRADED   │
-          │  GET /metrics → Prometheus   │
-          └──────────────────────────────┘
+OS Thread "ws-binance"                  OS Thread "merger"
+┌─────────────────────┐                ┌──────────────────────┐
+│ current_thread      │   SPSC(64)     │ spin-then-yield poll │    Main Thread
+│ tokio runtime       │──rtrb::push──▶│ pop() both rings     │    ┌──────────┐
+│ WS → parse → push   │                │ merge → publish      │──▶│  tonic   │──▶ Client
+└─────────────────────┘                └──────────────────────┘    │  gRPC    │──▶ Client
+                                                ▲    │watch       └──────────┘
+OS Thread "ws-bitstamp"                         │
+┌─────────────────────┐   SPSC(64)              │    ┌──────────────────────────────┐
+│ current_thread      │──rtrb::push─────────────┘    │  HTTP :9090                  │
+│ tokio runtime       │                              │  GET /health → OK/DEGRADED   │
+│ WS → parse → push   │                              │  GET /metrics → Prometheus   │
+└─────────────────────┘                              └──────────────────────────────┘
 ```
+
+**Thread architecture:**
+- Each exchange adapter runs on a **dedicated OS thread** with its own single-threaded tokio runtime — isolates WS I/O, eliminates work-stealing scheduler jitter
+- The merger runs on a **dedicated OS thread** with a spin-then-yield poll loop — no tokio runtime, no async overhead
+- gRPC + metrics HTTP run on the main multi-threaded tokio runtime (cold path)
 
 **Data flow:**
 1. Exchange adapters connect via WebSocket with `TCP_NODELAY` and `write_buffer_size: 0`
-2. Each adapter parses updates into `OrderBook` snapshots (stack-allocated `ArrayVec`) and sends via `mpsc` (move semantics — zero clone overhead)
-3. Merger receives from all exchanges, maintains latest book per exchange in a fixed-size array (no `HashMap`), evicts stale books (>5s), merges using a k-way cursor algorithm
-4. Merged top-10 + spread published via `tokio::watch` (latest-value semantics — clients always get the most recent state)
+2. Each adapter parses updates into `OrderBook` snapshots (stack-allocated `ArrayVec`) and pushes into a per-exchange **SPSC ring buffer** (`rtrb`) — the push is a single `store(Release)`, no CAS
+3. Merger spin-polls all SPSC consumers in round-robin, maintains latest book per exchange in a fixed-size array (no `HashMap`), evicts stale books (>5s), merges using a k-way cursor algorithm
+4. Merged top-10 + spread published via `tokio::watch` (latest-value semantics — `send()` is sync, no runtime needed)
 5. gRPC clients subscribe and receive the stream; Protobuf conversion happens on the client handler task, not the merger
 
 **Data integrity:**
@@ -146,7 +151,7 @@ The entire path from WebSocket frame receipt through merge output is zero-alloca
 - **`Level`** is `Copy` (`&'static str` + `FixedPoint` + `FixedPoint`) — no heap, no clone
 - **`OrderBook`** bids/asks use `ArrayVec<Level, 20>` — stack-allocated, fixed capacity
 - **`Summary`** bids/asks use `ArrayVec<Level, 10>` — stack-allocated merged output
-- **Exchange → merger channel** uses `tokio::sync::mpsc` with move semantics — the `OrderBook` value is transferred, not cloned
+- **Exchange → merger channel** uses per-exchange SPSC ring buffers (`rtrb`) — `store(Release)` / `load(Acquire)` only, no CAS, no contention
 - **JSON parsing** borrows `[&str; 2]` pairs via byte-offset tracking into stack-allocated `ArrayVec` — no `String` or `Vec` allocation
 - **Exchange book store** uses a fixed `[Option<OrderBook>; 2]` array with linear scan — no `HashMap` hashing or heap allocation
 
@@ -175,9 +180,9 @@ The Prometheus histogram stores per-bucket (non-cumulative) counts across 16 log
 
 ### Channel Architecture
 
-- **`tokio::sync::mpsc`** (exchange → merger): Move semantics — the `OrderBook` is transferred without cloning. Combined with `ArrayVec`-based types, the entire transfer is a stack-value move. Adapters use `try_send` to avoid blocking the WebSocket read loop when the channel is full — for order book data, dropping a stale snapshot is correct since the next frame contains a newer one.
-- **`tokio::watch`** (merger → gRPC): Latest-value semantics. Clients always get the most recent merged state. For order book data, intermediate states between reads are stale and irrelevant — only the current top-of-book matters.
-- **Tight merger loop**: The merger uses `while let Some(book) = rx.recv().await` instead of `tokio::select!` with a cancellation branch — eliminates per-message overhead of creating and polling a cancellation future. Shutdown propagates naturally through channel closure (cancel → adapters exit → senders drop → `recv()` returns `None`).
+- **SPSC ring buffers** (exchange → merger): One lock-free `rtrb` ring per exchange (64 slots). The producer does a single `store(Release)`, the consumer a single `load(Acquire)` — no CAS, no contention, no tokio wake-up. On a full ring, the producer drops the stale snapshot (correct for order book data — the next frame supersedes it).
+- **`tokio::watch`** (merger → gRPC): Latest-value semantics. `send()` is synchronous — the merger thread publishes without needing a tokio runtime. Clients always get the most recent merged state.
+- **Spin-then-yield merger**: The merger thread polls all SPSC consumers in round-robin with an adaptive backoff: `spin_loop()` (PAUSE, ~10ns) for the first 1,000 idle iterations, `yield_now()` for the next 4,000, then `sleep(100μs)`. This gives sub-microsecond wake-up when data arrives during spin phase, while avoiding 100% CPU burn between exchange ticks (~100ms apart).
 
 ### Fixed-Point Integer Prices
 
@@ -198,12 +203,19 @@ The merger publishes the internal `Summary` (stack-allocated `ArrayVec`) via the
 
 Exponential backoff (1s → 30s) with random jitter to prevent thundering herd on network recovery. Each exchange adapter handles its own reconnection loop independently. The system continues operating with partial data if one exchange is down.
 
+### Dedicated OS Threads
+
+Each exchange adapter and the merger run on dedicated OS threads, isolated from the main tokio multi-threaded runtime:
+
+- **Exchange threads**: Each gets its own `current_thread` tokio runtime — no work-stealing scheduler, no cross-thread task migration. The WS read loop runs with minimal scheduling jitter.
+- **Merger thread**: Plain OS thread with no tokio runtime at all. The spin-poll loop calls `consumer.pop()` + `core::hint::spin_loop()` directly — no async state machine, no future polling overhead.
+- **Main thread**: Multi-threaded tokio runtime handles gRPC serving and metrics HTTP — these are cold paths that benefit from work-stealing for concurrent client connections.
+
 ## Production Considerations
 
-For a production-grade system at Keyrock-level latency requirements, the following changes would move the needle beyond what's appropriate for a take-home:
+For a production-grade system beyond what's appropriate for a take-home:
 
-- **SPSC ring buffers** — One lock-free ring per exchange (e.g., `rtrb`), replacing `mpsc`. Single-producer single-consumer requires only `store(Release)` / `load(Acquire)` — no CAS, no contention.
-- **Core pinning + `isolcpus`** — Pin the merger to an isolated CPU core. Combined with SPSC, this enables a busy-wait spin loop (`try_recv` + `PAUSE`) that eliminates both OS thread wake-up latency and tokio scheduler jitter.
+- **Core pinning + `isolcpus`** — Pin the merger to an isolated CPU core. Combined with SPSC + spin-poll, this would eliminate OS scheduler preemption and give deterministic sub-microsecond wake-up latency.
 - **Kernel bypass I/O** — `io_uring` or DPDK for the WebSocket path, eliminating ~10-50μs of kernel network stack overhead per frame.
 
 ## Running Tests

@@ -1,21 +1,25 @@
 //! Order book merger.
 //!
-//! Receives [`OrderBook`] updates from all exchanges via an mpsc channel
-//! (move semantics — no clone overhead), maintains the latest book per
-//! exchange, and publishes merged [`Summary`] snapshots via a `tokio::watch`
-//! channel.
+//! Runs on a **dedicated OS thread** with a spin-then-yield poll loop over
+//! per-exchange SPSC ring buffers (`rtrb`). No tokio runtime, no async
+//! overhead — just `try_pop()` + `core::hint::spin_loop()` (PAUSE on x86).
+//!
+//! Maintains the latest book per exchange and publishes merged [`Summary`]
+//! snapshots via a `tokio::watch` channel (`send()` is sync — no runtime
+//! needed).
 //!
 //! Uses a k-way merge of pre-sorted exchange books: `O(TOP_N × k)` comparisons
 //! instead of `O(n log n)` concat+sort. For 2 exchanges × 20 levels → top 10,
 //! that's ~20 comparisons vs ~212.
 
 use std::cmp::Ordering;
-use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
 
 use arrayvec::ArrayVec;
-use tokio::sync::{mpsc, watch};
+use rtrb::Consumer;
+use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::metrics::Metrics;
@@ -94,44 +98,81 @@ impl BookStore {
     }
 }
 
-/// Runs the merger loop until channel closure.
+/// Spin thresholds for the adaptive poll loop.
+/// Phase 1 (< SPIN): `core::hint::spin_loop()` — PAUSE on x86, ~10ns each.
+/// Phase 2 (< YIELD): `thread::yield_now()` — gives up timeslice, ~1μs.
+/// Phase 3 (>= YIELD): `thread::sleep(100μs)` — backs off to avoid burning CPU
+///     when exchanges are quiet (between 100ms ticks).
+const SPIN_ITERS: u32 = 1_000;
+const YIELD_ITERS: u32 = 5_000;
+
+/// Runs the merger on a dedicated OS thread. Spin-polls SPSC ring buffers,
+/// merges, and publishes via `watch` (sync send — no tokio runtime needed).
 ///
-/// Uses a tight `recv()` loop instead of `tokio::select!` with cancellation —
-/// eliminates the per-message overhead of creating and polling a cancellation
-/// future. Shutdown propagates naturally: cancellation → adapters exit → senders
-/// drop → channel closes → `recv()` returns `None`.
-pub async fn run(
-    mut rx: mpsc::Receiver<OrderBook>,
-    summary_tx: watch::Sender<Summary>,
-    metrics: Arc<Metrics>,
+/// Exits when all producers are dropped or cancellation is signalled.
+pub fn run_spsc(
+    mut consumers: Vec<Consumer<OrderBook>>,
+    summary_tx: &watch::Sender<Summary>,
+    metrics: &Metrics,
+    cancel: &CancellationToken,
 ) {
     let mut books = BookStore::new();
+    let mut idle_count = 0u32;
 
-    info!("merger started");
+    info!("merger started (SPSC spin-poll, {} consumers)", consumers.len());
 
-    // Tight loop: no select!, no cancellation future allocation per iteration.
-    // Channel closure (all senders dropped) is the exit signal.
-    while let Some(book) = rx.recv().await {
-        let decode_start = book.decode_start;
-        books.insert(book);
-        books.evict_stale(STALE_THRESHOLD);
+    loop {
+        if cancel.is_cancelled() {
+            info!("merger cancelled");
+            break;
+        }
 
-        let t0 = Instant::now();
-        let summary = merge(&books);
-        metrics.merge_latency.record(t0.elapsed());
-        metrics.merges.fetch_add(1, Relaxed);
-        debug!(
-            spread = summary.spread,
-            bids = summary.bids.len(),
-            asks = summary.asks.len(),
-            "merged"
-        );
-        let _ = summary_tx.send(summary);
-        // e2e: WS frame received → merged summary published.
-        metrics.e2e_latency.record(decode_start.elapsed());
+        // All producers dropped → no more data.
+        if consumers.iter().all(Consumer::is_abandoned) {
+            info!("all producers dropped, merger exiting");
+            break;
+        }
+
+        let mut got_any = false;
+
+        // Round-robin poll: one pop per consumer per iteration for fairness.
+        for consumer in &mut consumers {
+            if let Ok(book) = consumer.pop() {
+                got_any = true;
+                let decode_start = book.decode_start;
+                books.insert(book);
+                books.evict_stale(STALE_THRESHOLD);
+
+                let t0 = Instant::now();
+                let summary = merge(&books);
+                metrics.merge_latency.record(t0.elapsed());
+                metrics.merges.fetch_add(1, Relaxed);
+                debug!(
+                    spread = summary.spread,
+                    bids = summary.bids.len(),
+                    asks = summary.asks.len(),
+                    "merged"
+                );
+                let _ = summary_tx.send(summary);
+                metrics.e2e_latency.record(decode_start.elapsed());
+            }
+        }
+
+        if got_any {
+            idle_count = 0;
+        } else {
+            idle_count = idle_count.saturating_add(1);
+            if idle_count < SPIN_ITERS {
+                core::hint::spin_loop();
+            } else if idle_count < YIELD_ITERS {
+                std::thread::yield_now();
+            } else {
+                std::thread::sleep(Duration::from_micros(100));
+            }
+        }
     }
 
-    info!("mpsc channel closed, merger exiting");
+    info!("merger exiting");
 }
 
 /// K-way merge of pre-sorted slices → top `n`. O(n × k) comparisons, zero alloc.

@@ -1,13 +1,15 @@
 //! Exchange WebSocket adapters.
 //!
-//! Each adapter connects to an exchange's depth stream, parses updates into
-//! [`OrderBook`] snapshots, and publishes them via an mpsc channel.
+//! Each adapter runs on a **dedicated OS thread** with its own single-threaded
+//! tokio runtime — isolates WS I/O from the main runtime, eliminates
+//! work-stealing scheduler jitter.
 //!
-//! Connections use `TCP_NODELAY` to eliminate Nagle's algorithm delay and
-//! `write_buffer_size: 0` for immediate WebSocket frame flushing.
+//! Adapters push [`OrderBook`] snapshots into a per-exchange **SPSC ring buffer**
+//! (`rtrb`). The ring uses only `store(Release)` / `load(Acquire)` — no CAS,
+//! no contention with the merger thread.
 //!
-//! Shared reconnection and channel-send logic lives here to avoid duplication
-//! across adapters.
+//! Connections use `TCP_NODELAY` and `write_buffer_size: 0` for immediate frame
+//! flushing.
 
 pub mod binance;
 pub mod bitstamp;
@@ -15,7 +17,7 @@ pub mod bitstamp;
 use std::time::{Duration, Instant};
 
 use arrayvec::ArrayVec;
-use tokio::sync::mpsc;
+use rtrb::Producer;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::Result;
@@ -29,7 +31,7 @@ pub trait Exchange: Send + Sync + 'static {
     fn connect(
         &self,
         symbol: String,
-        sender: mpsc::Sender<OrderBook>,
+        producer: Producer<OrderBook>,
         cancel: CancellationToken,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 }
@@ -74,22 +76,23 @@ pub fn build_book(
     })
 }
 
-/// Send book to merger. Drops on full (stale data). Returns `false` if channel closed.
+/// Push book into SPSC ring. Drops on full (stale data is correct to drop for
+/// order books — next snapshot supersedes). Returns `false` if consumer dropped.
 #[inline]
 pub fn try_send_book(
-    sender: &mpsc::Sender<OrderBook>,
+    producer: &mut Producer<OrderBook>,
     book: OrderBook,
     exchange: &'static str,
 ) -> bool {
-    match sender.try_send(book) {
+    if producer.is_abandoned() {
+        tracing::warn!(exchange, "consumer dropped, stopping");
+        return false;
+    }
+    match producer.push(book) {
         Ok(()) => true,
-        Err(mpsc::error::TrySendError::Full(_)) => {
-            tracing::warn!(exchange, "channel full, dropping snapshot");
+        Err(rtrb::PushError::Full(_)) => {
+            tracing::warn!(exchange, "ring full, dropping snapshot");
             true
-        }
-        Err(mpsc::error::TrySendError::Closed(_)) => {
-            tracing::warn!(exchange, "channel closed, stopping");
-            false
         }
     }
 }

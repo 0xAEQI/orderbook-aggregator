@@ -1,33 +1,21 @@
 use std::sync::Arc;
 
 use clap::Parser;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 use tracing::info;
 
 use orderbook_aggregator::config::Config;
-use orderbook_aggregator::exchange::{Exchange, binance::Binance, bitstamp::Bitstamp};
+use orderbook_aggregator::exchange::binance::Binance;
+use orderbook_aggregator::exchange::bitstamp::Bitstamp;
+use orderbook_aggregator::exchange::Exchange;
+use orderbook_aggregator::merger;
 use orderbook_aggregator::metrics::{self, Metrics};
 use orderbook_aggregator::server::{
     OrderbookService, proto::orderbook_aggregator_server::OrderbookAggregatorServer,
 };
-use orderbook_aggregator::types::{self, Summary};
-use orderbook_aggregator::merger;
-
-fn spawn_exchange(
-    exchange: impl Exchange,
-    name: &'static str,
-    symbol: String,
-    tx: mpsc::Sender<types::OrderBook>,
-    cancel: CancellationToken,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        if let Err(e) = exchange.connect(symbol, tx, cancel).await {
-            tracing::error!(exchange = name, error = %e, "fatal error");
-        }
-    })
-}
+use orderbook_aggregator::types::Summary;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -57,37 +45,85 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register metrics — adding a new exchange is a one-line change here.
     let metrics = Arc::new(Metrics::register(&["binance", "bitstamp"]));
 
-    // mpsc channel for exchange → merger (move semantics, no broadcast clone overhead).
-    let (book_tx, book_rx) = mpsc::channel::<types::OrderBook>(64);
+    // SPSC ring buffers: one per exchange, 64 slots each.
+    // Only store(Release) / load(Acquire) — no CAS, no contention.
+    let (binance_prod, binance_cons) = rtrb::RingBuffer::new(64);
+    let (bitstamp_prod, bitstamp_cons) = rtrb::RingBuffer::new(64);
 
     // Watch channel for merger → gRPC server (latest-value semantics).
     let (summary_tx, summary_rx) = watch::channel(Summary::default());
 
-    let binance_handle = spawn_exchange(
-        Binance { metrics: metrics.exchange("binance") },
-        "binance",
-        config.symbol.clone(),
-        book_tx.clone(),
-        cancel.clone(),
-    );
-    let bitstamp_handle = spawn_exchange(
-        Bitstamp { metrics: metrics.exchange("bitstamp") },
-        "bitstamp",
-        config.symbol.clone(),
-        book_tx.clone(),
-        cancel.clone(),
-    );
+    // --- Dedicated OS threads ---
+    // Each exchange gets its own OS thread with a single-threaded tokio runtime.
+    // Isolates WS I/O from the main runtime — no work-stealing scheduler jitter.
 
-    // Drop the original sender so channel closes when exchanges stop.
-    drop(book_tx);
-
-    // Spawn merger task.
-    let merger_handle = {
-        let metrics = metrics.clone();
-        tokio::spawn(async move {
-            merger::run(book_rx, summary_tx, metrics).await;
-        })
+    let binance_thread = {
+        let metrics = metrics.exchange("binance");
+        let symbol = config.symbol.clone();
+        let cancel = cancel.clone();
+        std::thread::Builder::new()
+            .name("ws-binance".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("binance tokio runtime");
+                rt.block_on(async {
+                    let binance = Binance { metrics };
+                    if let Err(e) = binance.connect(symbol, binance_prod, cancel).await {
+                        tracing::error!(exchange = "binance", error = %e, "fatal error");
+                    }
+                });
+            })?
     };
+
+    let bitstamp_thread = {
+        let metrics = metrics.exchange("bitstamp");
+        let symbol = config.symbol.clone();
+        let cancel = cancel.clone();
+        std::thread::Builder::new()
+            .name("ws-bitstamp".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("bitstamp tokio runtime");
+                rt.block_on(async {
+                    let bitstamp = Bitstamp { metrics };
+                    if let Err(e) = bitstamp.connect(symbol, bitstamp_prod, cancel).await {
+                        tracing::error!(exchange = "bitstamp", error = %e, "fatal error");
+                    }
+                });
+            })?
+    };
+
+    // Merger on a dedicated OS thread — plain spin-poll loop, no tokio runtime.
+    let merger_thread = {
+        let metrics = metrics.clone();
+        let cancel = cancel.clone();
+        std::thread::Builder::new()
+            .name("merger".into())
+            .spawn(move || {
+                merger::run_spsc(
+                    vec![binance_cons, bitstamp_cons],
+                    &summary_tx,
+                    &metrics,
+                    &cancel,
+                );
+            })?
+    };
+
+    info!("spawned 3 dedicated OS threads: ws-binance, ws-bitstamp, merger");
+
+    // Ctrl+C handler.
+    let shutdown_cancel = cancel.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to listen for ctrl+c");
+        info!("received ctrl+c, shutting down");
+        shutdown_cancel.cancel();
+    });
 
     // Spawn metrics/health HTTP server.
     let http_handle = {
@@ -109,21 +145,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             server_cancel.cancelled().await;
         });
 
-    // Ctrl+C handler.
-    let shutdown_cancel = cancel.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to listen for ctrl+c");
-        info!("received ctrl+c, shutting down");
-        shutdown_cancel.cancel();
-    });
-
     // Run server (blocks until shutdown).
     server.await?;
 
-    // Wait for all tasks to finish.
-    let _ = tokio::join!(binance_handle, bitstamp_handle, merger_handle, http_handle);
+    // Wait for HTTP to finish.
+    let _ = http_handle.await;
+
+    // Join OS threads (should already be exiting due to cancellation).
+    let _ = binance_thread.join();
+    let _ = bitstamp_thread.join();
+    let _ = merger_thread.join();
 
     info!("shutdown complete");
     Ok(())
