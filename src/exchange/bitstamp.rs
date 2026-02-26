@@ -9,158 +9,79 @@
 //! frame buffer. Keeps first 20 of 100 levels and skips the rest in a tight
 //! loop -- no serde, no simd-json, no `IgnoredAny` overhead.
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
 
-use futures_util::{SinkExt, StreamExt};
 use rtrb::Producer;
-use tokio_tungstenite::connect_async_tls_with_config;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use crate::error::Result;
 use crate::json_walker::walk_bitstamp;
 use crate::metrics::ExchangeMetrics;
 use crate::types::OrderBook;
 
-use super::Exchange;
+use super::{HandleResult, WsHandler};
 
 const BITSTAMP_WS_URL: &str = "wss://ws.bitstamp.net";
 
 /// Bitstamp `order_book` channel adapter (full snapshots, top 100 levels).
-pub struct Bitstamp {
-    pub metrics: Arc<ExchangeMetrics>,
-}
+pub struct BitstampHandler;
 
-impl Exchange for Bitstamp {
-    async fn connect(
-        &self,
-        symbol: String,
-        mut producer: Producer<OrderBook>,
-        cancel: CancellationToken,
-    ) -> Result<()> {
+impl WsHandler for BitstampHandler {
+    const NAME: &'static str = "bitstamp";
+
+    fn ws_url(&self, _symbol: &str) -> String {
+        BITSTAMP_WS_URL.to_owned()
+    }
+
+    fn subscribe_message(&self, symbol: &str) -> Option<String> {
         let channel = format!("order_book_{}", symbol.to_lowercase());
-        let subscribe_msg =
-            format!(r#"{{"event":"bts:subscribe","data":{{"channel":"{channel}"}}}}"#);
-        let ws_config = super::ws_config();
-        let mut backoff_ms = super::INITIAL_BACKOFF_MS;
+        Some(format!(
+            r#"{{"event":"bts:subscribe","data":{{"channel":"{channel}"}}}}"#
+        ))
+    }
 
-        loop {
-            if cancel.is_cancelled() {
-                return Ok(());
-            }
-
-            info!(exchange = "bitstamp", url = BITSTAMP_WS_URL, "connecting");
-
-            let connect_fut = connect_async_tls_with_config(
-                BITSTAMP_WS_URL,
-                Some(ws_config),
-                true, // TCP_NODELAY -- disable Nagle's algorithm for lower latency
-                None,
+    fn process_text(
+        &mut self,
+        text: &str,
+        producer: &mut Producer<OrderBook>,
+        metrics: &ExchangeMetrics,
+    ) -> HandleResult {
+        let t0 = Instant::now();
+        let Some((event, bids, asks)) = walk_bitstamp(text) else {
+            metrics.errors.fetch_add(1, Relaxed);
+            warn!(
+                exchange = "bitstamp",
+                payload_head = &text[..text.len().min(200)],
+                "parse error"
             );
-            match tokio::time::timeout(super::CONNECT_TIMEOUT, connect_fut).await {
-                Err(_) => {
-                    self.metrics.errors.fetch_add(1, Relaxed);
-                    error!(exchange = "bitstamp", "connection timed out");
-                }
-                Ok(Ok((ws_stream, _))) => {
-                    info!(exchange = "bitstamp", "connected");
-                    self.metrics.connected.store(true, Relaxed);
-                    backoff_ms = super::INITIAL_BACKOFF_MS;
-
-                    let (mut write, mut read) = ws_stream.split();
-
-                    if let Err(e) = write.send(Message::Text(subscribe_msg.clone())).await {
-                        self.metrics.errors.fetch_add(1, Relaxed);
-                        error!(exchange = "bitstamp", error = %e, "subscribe failed");
-                        self.metrics.connected.store(false, Relaxed);
-                        continue;
-                    }
-
-                    info!(exchange = "bitstamp", %channel, "subscribe requested");
-
-                    loop {
-                        let text = tokio::select! {
-                            _ = cancel.cancelled() => {
-                                info!(exchange = "bitstamp", "shutting down");
-                                self.metrics.connected.store(false, Relaxed);
-                                return Ok(());
-                            }
-                            msg = read.next() => match msg {
-                                Some(Ok(Message::Text(t))) => t,
-                                Some(Ok(_)) => continue,
-                                Some(Err(e)) => {
-                                    self.metrics.errors.fetch_add(1, Relaxed);
-                                    warn!(exchange = "bitstamp", error = %e, "ws error");
-                                    break;
-                                }
-                                None => {
-                                    warn!(exchange = "bitstamp", "stream ended");
-                                    break;
-                                }
-                            }
-                        };
-
-                        let t0 = Instant::now();
-                        let Some((event, bids, asks)) = walk_bitstamp(&text) else {
-                            self.metrics.errors.fetch_add(1, Relaxed);
-                            warn!(
-                                exchange = "bitstamp",
-                                payload_head = &text[..text.len().min(200)],
-                                "parse error"
-                            );
-                            continue;
-                        };
-                        match event {
-                            "data" => {
-                                let Some(book) = super::build_book("bitstamp", &bids, &asks, t0)
-                                else {
-                                    self.metrics.errors.fetch_add(1, Relaxed);
-                                    warn!(exchange = "bitstamp", "malformed level");
-                                    continue;
-                                };
-                                self.metrics.decode_latency.record(t0.elapsed());
-                                self.metrics.messages.fetch_add(1, Relaxed);
-                                if !super::try_send_book(&mut producer, book, "bitstamp") {
-                                    return Ok(());
-                                }
-                            }
-                            "bts:subscription_succeeded" => {
-                                info!(exchange = "bitstamp", "subscription confirmed");
-                            }
-                            "bts:error" => {
-                                self.metrics.errors.fetch_add(1, Relaxed);
-                                let msg =
-                                    crate::json_walker::extract_string(&text, b"\"message\":")
-                                        .unwrap_or("unknown");
-                                error!(exchange = "bitstamp", message = msg, "server error");
-                                break;
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    self.metrics.connected.store(false, Relaxed);
-                }
-                Ok(Err(e)) => {
-                    self.metrics.errors.fetch_add(1, Relaxed);
-                    error!(exchange = "bitstamp", error = %e, "connection failed");
+            return HandleResult::Continue;
+        };
+        match event {
+            "data" => {
+                let Some(book) = super::build_book("bitstamp", &bids, &asks, t0) else {
+                    metrics.errors.fetch_add(1, Relaxed);
+                    warn!(exchange = "bitstamp", "malformed level");
+                    return HandleResult::Continue;
+                };
+                metrics.decode_latency.record(t0.elapsed());
+                metrics.messages.fetch_add(1, Relaxed);
+                if !super::try_send_book(producer, book, "bitstamp") {
+                    return HandleResult::Shutdown;
                 }
             }
-
-            if cancel.is_cancelled() {
-                return Ok(());
+            "bts:subscription_succeeded" => {
+                info!(exchange = "bitstamp", "subscription confirmed");
             }
-
-            self.metrics.reconnections.fetch_add(1, Relaxed);
-            if !super::backoff_sleep(&mut backoff_ms, super::MAX_BACKOFF_MS, "bitstamp", &cancel)
-                .await
-            {
-                return Ok(());
+            "bts:error" => {
+                metrics.errors.fetch_add(1, Relaxed);
+                let msg = crate::json_walker::extract_string(text, b"\"message\":")
+                    .unwrap_or("unknown");
+                error!(exchange = "bitstamp", message = msg, "server error");
+                return HandleResult::Reconnect;
             }
+            _ => {}
         }
+        HandleResult::Continue
     }
 }
 

@@ -4,146 +4,80 @@
 //! Pushes parsed [`OrderBook`] snapshots into an SPSC ring buffer -- the push
 //! is a single `store(Release)`, no CAS.
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
 
-use futures_util::StreamExt;
 use rtrb::Producer;
-use tokio_tungstenite::connect_async_tls_with_config;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::warn;
 
-use crate::error::Result;
 use crate::json_walker::walk_binance;
 use crate::metrics::ExchangeMetrics;
 use crate::types::OrderBook;
 
-use super::Exchange;
+use super::{HandleResult, WsHandler};
 
 /// Binance partial book depth adapter (`depth20@100ms` stream).
-pub struct Binance {
-    pub metrics: Arc<ExchangeMetrics>,
+#[derive(Default)]
+pub struct BinanceHandler {
+    last_seq: u64,
 }
 
-impl Exchange for Binance {
-    async fn connect(
-        &self,
-        symbol: String,
-        mut producer: Producer<OrderBook>,
-        cancel: CancellationToken,
-    ) -> Result<()> {
-        let url = format!(
+impl BinanceHandler {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl WsHandler for BinanceHandler {
+    const NAME: &'static str = "binance";
+
+    fn ws_url(&self, symbol: &str) -> String {
+        format!(
             "wss://stream.binance.com:9443/ws/{}@depth20@100ms",
             symbol.to_lowercase()
-        );
-        let ws_config = super::ws_config();
+        )
+    }
 
-        let mut backoff_ms = super::INITIAL_BACKOFF_MS;
-
-        loop {
-            if cancel.is_cancelled() {
-                return Ok(());
-            }
-
-            info!(exchange = "binance", %url, "connecting");
-
-            let connect_fut = connect_async_tls_with_config(
-                &url,
-                Some(ws_config),
-                true, // TCP_NODELAY -- disable Nagle's algorithm for lower latency
-                None,
+    fn process_text(
+        &mut self,
+        text: &str,
+        producer: &mut Producer<OrderBook>,
+        metrics: &ExchangeMetrics,
+    ) -> HandleResult {
+        let t0 = Instant::now();
+        let Some((seq, bids, asks)) = walk_binance(text) else {
+            metrics.errors.fetch_add(1, Relaxed);
+            warn!(
+                exchange = "binance",
+                payload_head = &text[..text.len().min(200)],
+                "parse error"
             );
-            match tokio::time::timeout(super::CONNECT_TIMEOUT, connect_fut).await {
-                Err(_) => {
-                    self.metrics.errors.fetch_add(1, Relaxed);
-                    error!(exchange = "binance", "connection timed out");
-                }
-                Ok(Ok((ws_stream, _))) => {
-                    info!(exchange = "binance", "connected");
-                    self.metrics.connected.store(true, Relaxed);
-                    backoff_ms = super::INITIAL_BACKOFF_MS;
-                    let mut last_seq: u64 = 0;
+            return HandleResult::Continue;
+        };
 
-                    let (_write, mut read) = ws_stream.split();
-
-                    loop {
-                        let text = tokio::select! {
-                            _ = cancel.cancelled() => {
-                                info!(exchange = "binance", "shutting down");
-                                self.metrics.connected.store(false, Relaxed);
-                                return Ok(());
-                            }
-                            msg = read.next() => match msg {
-                                Some(Ok(Message::Text(t))) => t,
-                                Some(Ok(_)) => continue,
-                                Some(Err(e)) => {
-                                    self.metrics.errors.fetch_add(1, Relaxed);
-                                    warn!(exchange = "binance", error = %e, "ws error");
-                                    break;
-                                }
-                                None => {
-                                    warn!(exchange = "binance", "stream ended");
-                                    break;
-                                }
-                            }
-                        };
-
-                        let t0 = Instant::now();
-                        let Some((seq, bids, asks)) = walk_binance(&text) else {
-                            self.metrics.errors.fetch_add(1, Relaxed);
-                            warn!(
-                                exchange = "binance",
-                                payload_head = &text[..text.len().min(200)],
-                                "parse error"
-                            );
-                            continue;
-                        };
-
-                        // Sequence gap detection: lastUpdateId should increase
-                        // monotonically. A gap means we missed snapshots.
-                        if seq > 0 && last_seq > 0 && seq <= last_seq {
-                            warn!(
-                                exchange = "binance",
-                                seq, last_seq, "out-of-order update (stale or duplicate)"
-                            );
-                            self.metrics.errors.fetch_add(1, Relaxed);
-                            continue;
-                        }
-                        last_seq = seq;
-
-                        let Some(book) = super::build_book("binance", &bids, &asks, t0) else {
-                            self.metrics.errors.fetch_add(1, Relaxed);
-                            warn!(exchange = "binance", "malformed level");
-                            continue;
-                        };
-                        self.metrics.decode_latency.record(t0.elapsed());
-                        self.metrics.messages.fetch_add(1, Relaxed);
-                        if !super::try_send_book(&mut producer, book, "binance") {
-                            return Ok(());
-                        }
-                    }
-
-                    self.metrics.connected.store(false, Relaxed);
-                }
-                Ok(Err(e)) => {
-                    self.metrics.errors.fetch_add(1, Relaxed);
-                    error!(exchange = "binance", error = %e, "connection failed");
-                }
-            }
-
-            if cancel.is_cancelled() {
-                return Ok(());
-            }
-
-            self.metrics.reconnections.fetch_add(1, Relaxed);
-            if !super::backoff_sleep(&mut backoff_ms, super::MAX_BACKOFF_MS, "binance", &cancel)
-                .await
-            {
-                return Ok(());
-            }
+        // Sequence gap detection: lastUpdateId should increase monotonically.
+        if seq > 0 && self.last_seq > 0 && seq <= self.last_seq {
+            warn!(
+                exchange = "binance",
+                seq, last_seq = self.last_seq, "out-of-order update (stale or duplicate)"
+            );
+            metrics.errors.fetch_add(1, Relaxed);
+            return HandleResult::Continue;
         }
+        self.last_seq = seq;
+
+        let Some(book) = super::build_book("binance", &bids, &asks, t0) else {
+            metrics.errors.fetch_add(1, Relaxed);
+            warn!(exchange = "binance", "malformed level");
+            return HandleResult::Continue;
+        };
+        metrics.decode_latency.record(t0.elapsed());
+        metrics.messages.fetch_add(1, Relaxed);
+        if !super::try_send_book(producer, book, "binance") {
+            return HandleResult::Shutdown;
+        }
+        HandleResult::Continue
     }
 }
 

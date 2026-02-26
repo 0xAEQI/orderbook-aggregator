@@ -7,9 +7,9 @@ use tonic::transport::Server;
 use tracing::info;
 
 use orderbook_aggregator::config::Config;
-use orderbook_aggregator::exchange::Exchange;
-use orderbook_aggregator::exchange::binance::Binance;
-use orderbook_aggregator::exchange::bitstamp::Bitstamp;
+use orderbook_aggregator::exchange::binance::BinanceHandler;
+use orderbook_aggregator::exchange::bitstamp::BitstampHandler;
+use orderbook_aggregator::exchange::spawn_exchange;
 use orderbook_aggregator::merger;
 
 /// Capacity of each per-exchange SPSC ring buffer. Small by design -- for order
@@ -62,45 +62,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Each exchange gets its own OS thread with a single-threaded tokio runtime.
     // Isolates WS I/O from the main runtime -- no work-stealing scheduler jitter.
 
-    let binance_thread = {
-        let metrics = metrics.exchange("binance");
-        let symbol = config.symbol.clone();
-        let cancel = cancel.clone();
-        std::thread::Builder::new()
-            .name("ws-binance".into())
-            .spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("binance tokio runtime");
-                rt.block_on(async {
-                    let binance = Binance { metrics };
-                    if let Err(e) = binance.connect(symbol, binance_prod, cancel).await {
-                        tracing::error!(exchange = "binance", error = %e, "fatal error");
-                    }
-                });
-            })?
-    };
+    let binance_thread = spawn_exchange(
+        BinanceHandler::new(),
+        config.symbol.clone(),
+        binance_prod,
+        metrics.exchange("binance"),
+        cancel.clone(),
+    )?;
 
-    let bitstamp_thread = {
-        let metrics = metrics.exchange("bitstamp");
-        let symbol = config.symbol.clone();
-        let cancel = cancel.clone();
-        std::thread::Builder::new()
-            .name("ws-bitstamp".into())
-            .spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("bitstamp tokio runtime");
-                rt.block_on(async {
-                    let bitstamp = Bitstamp { metrics };
-                    if let Err(e) = bitstamp.connect(symbol, bitstamp_prod, cancel).await {
-                        tracing::error!(exchange = "bitstamp", error = %e, "fatal error");
-                    }
-                });
-            })?
-    };
+    let bitstamp_thread = spawn_exchange(
+        BitstampHandler,
+        config.symbol.clone(),
+        bitstamp_prod,
+        metrics.exchange("bitstamp"),
+        cancel.clone(),
+    )?;
 
     // Merger on a dedicated OS thread -- plain spin-poll loop, no tokio runtime.
     let merger_thread = {
