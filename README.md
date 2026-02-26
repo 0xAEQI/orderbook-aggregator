@@ -253,11 +253,11 @@ Configured for stability: 200 samples, 10s measurement, 3s warmup, 3% noise thre
 
 | Benchmark | What it measures | Median | 95% CI |
 |-----------|-----------------|--------|--------|
-| `binance_decode_20` | SIMD byte walker + fixed-point for 20-level Binance depth snapshot | 1.73 μs | [1.68, 1.78] |
-| `bitstamp_decode_20` | SIMD byte walker + fixed-point for 20-level Bitstamp order book | 1.74 μs | [1.68, 1.80] |
-| `bitstamp_decode_100` | Same, but 100 levels (production Bitstamp payload) — keeps 20, skips 80 | 1.78 μs | [1.72, 1.84] |
-| `fixed_point_parse` | Byte-scan decimal string to `FixedPoint(u64)` — price + quantity pair | 13 ns | [12.9, 13.6] |
-| `merge_2x20` | K-way merge of 2×20 levels into top-10 output | 252 ns | [236, 271] |
-| `e2e_parse_merge` | Full pipeline: Binance 20 + Bitstamp 100 → decode → merge → Summary | **3.18 μs** | [3.06, 3.31] |
+| `binance_decode_20` | SIMD byte walker + fixed-point for 20-level Binance depth snapshot | 1.85 μs | [1.80, 1.91] |
+| `bitstamp_decode_20` | SIMD byte walker + fixed-point for 20-level Bitstamp order book | 1.85 μs | [1.79, 1.92] |
+| `bitstamp_decode_100` | Same, but 100 levels (production Bitstamp payload) — keeps 20, skips 80 | 1.91 μs | [1.84, 1.98] |
+| `fixed_point_parse` | Byte-scan decimal string to `FixedPoint(u64)` — price + quantity pair | 13.2 ns | [12.9, 13.5] |
+| `merge_2x20` | K-way merge of 2×20 levels into top-10 output | 223 ns | [212, 235] |
+| `e2e_parse_merge` | Full pipeline: Binance 20 + Bitstamp 100 → decode → merge → Summary | **3.34 μs** | [3.23, 3.46] |
 
-Note: `bitstamp_decode_100` (1.78μs) is nearly identical to `bitstamp_decode_20` (1.74μs) — SIMD `memmem` skips the 80 excess levels so fast that buffer size barely matters.
+Note: `bitstamp_decode_100` (1.91μs) is nearly identical to `bitstamp_decode_20` (1.85μs) — SIMD `memmem` skips the 80 excess levels so fast that buffer size barely matters.
