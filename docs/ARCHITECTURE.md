@@ -24,7 +24,7 @@ Four OS threads, each with a single responsibility:
 |--------|---------|------|---------|
 | `ws-binance` | `current_thread` tokio | WS receive → JSON parse → SPSC push | OS-scheduled |
 | `ws-bitstamp` | `current_thread` tokio | WS receive → JSON parse → SPSC push | OS-scheduled |
-| `merger` | None (plain thread) | SPSC drain → k-way merge → watch publish | Last CPU core |
+| `merger` | None (plain thread) | SPSC pop → k-way merge → watch publish | Last CPU core |
 | `main` | Multi-threaded tokio | gRPC serving, metrics HTTP, signal handling | OS-scheduled |
 
 ### Why Dedicated Threads
