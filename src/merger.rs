@@ -13,6 +13,7 @@
 //! that's ~20 comparisons vs ~212.
 
 use std::cmp::Ordering;
+use std::sync::OnceLock;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
 
@@ -101,10 +102,23 @@ impl BookStore {
 /// Spin thresholds for the adaptive poll loop.
 /// Phase 1 (< SPIN): `core::hint::spin_loop()` — PAUSE on x86, ~10ns each.
 /// Phase 2 (< YIELD): `thread::yield_now()` — gives up timeslice, ~1μs.
-/// Phase 3 (>= YIELD): `thread::sleep(100μs)` — backs off to avoid burning CPU
-///     when exchanges are quiet (between 100ms ticks).
+/// Phase 3 (>= YIELD): `thread::park_timeout(100μs)` — blocks until unparked
+///     by a producer or timeout expires. Producers call `notify()` after each
+///     push, giving ~1μs wake-up instead of polling through a 100μs sleep.
 const SPIN_ITERS: u32 = 1_000;
 const YIELD_ITERS: u32 = 5_000;
+
+/// Merger thread handle — set once at the start of `run_spsc`, read by
+/// producers via `notify()` to wake the merger instantly after a push.
+static MERGER_THREAD: OnceLock<std::thread::Thread> = OnceLock::new();
+
+/// Wake the merger thread if it's parked. Called by producers after push.
+#[inline]
+pub fn notify() {
+    if let Some(t) = MERGER_THREAD.get() {
+        t.unpark();
+    }
+}
 
 /// Runs the merger on a dedicated OS thread. Spin-polls SPSC ring buffers,
 /// merges, and publishes via `watch` (sync send — no tokio runtime needed).
@@ -119,6 +133,7 @@ pub fn run_spsc(
     let mut books = BookStore::new();
     let mut idle_count = 0u32;
 
+    MERGER_THREAD.set(std::thread::current()).ok();
     info!("merger started (SPSC spin-poll, {} consumers)", consumers.len());
 
     loop {
@@ -167,7 +182,7 @@ pub fn run_spsc(
             } else if idle_count < YIELD_ITERS {
                 std::thread::yield_now();
             } else {
-                std::thread::sleep(Duration::from_micros(100));
+                std::thread::park_timeout(Duration::from_micros(100));
             }
         }
     }
