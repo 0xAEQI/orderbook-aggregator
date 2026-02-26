@@ -22,8 +22,6 @@ use crate::types::OrderBook;
 
 use super::Exchange;
 
-const MAX_BACKOFF_MS: u64 = 30_000;
-
 /// Binance partial book depth adapter (`depth20@100ms` stream).
 pub struct Binance {
     pub metrics: Arc<ExchangeMetrics>,
@@ -42,7 +40,7 @@ impl Exchange for Binance {
         );
         let ws_config = super::ws_config();
 
-        let mut backoff_ms = 1000u64;
+        let mut backoff_ms = super::INITIAL_BACKOFF_MS;
 
         loop {
             if cancel.is_cancelled() {
@@ -51,7 +49,12 @@ impl Exchange for Binance {
 
             info!(exchange = "binance", %url, "connecting");
 
-            let connect_fut = connect_async_tls_with_config(&url, Some(ws_config), true, None);
+            let connect_fut = connect_async_tls_with_config(
+                &url,
+                Some(ws_config),
+                true, // TCP_NODELAY — disable Nagle's algorithm for lower latency
+                None,
+            );
             match tokio::time::timeout(super::CONNECT_TIMEOUT, connect_fut).await {
                 Err(_) => {
                     self.metrics.errors.fetch_add(1, Relaxed);
@@ -60,7 +63,7 @@ impl Exchange for Binance {
                 Ok(Ok((ws_stream, _))) => {
                     info!(exchange = "binance", "connected");
                     self.metrics.connected.store(true, Relaxed);
-                    backoff_ms = 1000;
+                    backoff_ms = super::INITIAL_BACKOFF_MS;
                     let mut last_seq: u64 = 0;
 
                     let (_write, mut read) = ws_stream.split();
@@ -90,7 +93,11 @@ impl Exchange for Binance {
                         let t0 = Instant::now();
                         let Some((seq, bids, asks)) = walk_binance(&text) else {
                             self.metrics.errors.fetch_add(1, Relaxed);
-                            warn!(exchange = "binance", "parse error");
+                            warn!(
+                                exchange = "binance",
+                                payload_head = &text[..text.len().min(200)],
+                                "parse error"
+                            );
                             continue;
                         };
 
@@ -131,7 +138,7 @@ impl Exchange for Binance {
                 return Ok(());
             }
 
-            if !super::backoff_sleep(&mut backoff_ms, MAX_BACKOFF_MS, "binance", &cancel).await {
+            if !super::backoff_sleep(&mut backoff_ms, super::MAX_BACKOFF_MS, "binance", &cancel).await {
                 return Ok(());
             }
         }

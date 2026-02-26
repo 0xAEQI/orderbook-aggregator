@@ -81,10 +81,10 @@ impl BookStore {
 
     /// Evict books older than `threshold`. Prevents stale data from a
     /// disconnected exchange from contaminating the merged output.
-    fn evict_stale(&mut self, threshold: Duration) {
+    fn evict_stale(&mut self, now: Instant, threshold: Duration) {
         for i in 0..self.len {
             if let Some(book) = &self.books[i] {
-                let age = book.decode_start.elapsed();
+                let age = now - book.decode_start;
                 if age > threshold {
                     warn!(
                         exchange = book.exchange,
@@ -141,9 +141,9 @@ pub fn run_spsc(
                 got_any = true;
                 let decode_start = book.decode_start;
                 books.insert(book);
-                books.evict_stale(STALE_THRESHOLD);
 
                 let t0 = Instant::now();
+                books.evict_stale(t0, STALE_THRESHOLD);
                 let summary = merge(&books);
                 metrics.merge_latency.record(t0.elapsed());
                 metrics.merges.fetch_add(1, Relaxed);
@@ -198,7 +198,6 @@ fn merge_top_n(
             }
         }
         let Some(i) = best else { break };
-        // Level is Copy — no clone needed.
         if result.try_push(slices[i][cursors[i]]).is_err() {
             break;
         }
@@ -456,7 +455,7 @@ mod tests {
             &[level("fresh_ex", 102.0, 3.0)],
         ));
 
-        books.evict_stale(STALE_THRESHOLD);
+        books.evict_stale(Instant::now(), STALE_THRESHOLD);
         let summary = merge(&books);
 
         // Only fresh_ex should survive.

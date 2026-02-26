@@ -11,6 +11,9 @@ use orderbook_aggregator::exchange::binance::Binance;
 use orderbook_aggregator::exchange::bitstamp::Bitstamp;
 use orderbook_aggregator::exchange::Exchange;
 use orderbook_aggregator::merger;
+
+/// Capacity of each per-exchange SPSC ring buffer.
+const RING_BUFFER_CAPACITY: usize = 64;
 use orderbook_aggregator::metrics::{self, Metrics};
 use orderbook_aggregator::server::{
     OrderbookService, proto::orderbook_aggregator_server::OrderbookAggregatorServer,
@@ -47,8 +50,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // SPSC ring buffers: one per exchange, 64 slots each.
     // Only store(Release) / load(Acquire) — no CAS, no contention.
-    let (binance_prod, binance_cons) = rtrb::RingBuffer::new(64);
-    let (bitstamp_prod, bitstamp_cons) = rtrb::RingBuffer::new(64);
+    let (binance_prod, binance_cons) = rtrb::RingBuffer::new(RING_BUFFER_CAPACITY);
+    let (bitstamp_prod, bitstamp_cons) = rtrb::RingBuffer::new(RING_BUFFER_CAPACITY);
 
     // Watch channel for merger → gRPC server (latest-value semantics).
     let (summary_tx, summary_rx) = watch::channel(Summary::default());
@@ -115,13 +118,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("spawned 3 dedicated OS threads: ws-binance, ws-bitstamp, merger");
 
-    // Ctrl+C handler.
+    // Shutdown signal handler (SIGINT + SIGTERM).
     let shutdown_cancel = cancel.clone();
     tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            let mut sigterm = tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::terminate(),
+            )
+            .expect("failed to register SIGTERM handler");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = sigterm.recv() => {},
+            }
+        }
+        #[cfg(not(unix))]
         tokio::signal::ctrl_c()
             .await
             .expect("failed to listen for ctrl+c");
-        info!("received ctrl+c, shutting down");
+        info!("received shutdown signal, draining");
         shutdown_cancel.cancel();
     });
 

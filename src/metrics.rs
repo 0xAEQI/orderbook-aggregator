@@ -317,9 +317,14 @@ pub async fn serve_http(port: u16, metrics: Arc<Metrics>, cancel: CancellationTo
         .route("/metrics", get(prom_metrics))
         .with_state(metrics);
 
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
-        .await
-        .expect("failed to bind metrics port");
+    let listener = match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!(port, error = %e, "failed to bind metrics port");
+            cancel.cancel();
+            return;
+        }
+    };
 
     info!(port, "metrics/health HTTP server listening");
 

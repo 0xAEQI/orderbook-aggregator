@@ -2,7 +2,9 @@
 //!
 //! Each adapter runs on a **dedicated OS thread** with its own single-threaded
 //! tokio runtime — isolates WS I/O from the main runtime, eliminates
-//! work-stealing scheduler jitter.
+//! work-stealing scheduler jitter. Both exchanges provide full snapshots
+//! (not incremental diffs), so no local order book maintenance or sequence
+//! reconciliation is required.
 //!
 //! Adapters push [`OrderBook`] snapshots into a per-exchange **SPSC ring buffer**
 //! (`rtrb`). The ring uses only `store(Release)` / `load(Acquire)` — no CAS,
@@ -25,6 +27,12 @@ use crate::types::{FixedPoint, Level, MAX_LEVELS, OrderBook};
 
 /// Connection timeout for WebSocket handshake.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Maximum reconnection backoff (shared across all adapters).
+const MAX_BACKOFF_MS: u64 = 30_000;
+
+/// Initial reconnection backoff before exponential increase.
+const INITIAL_BACKOFF_MS: u64 = 1_000;
 
 /// Exchange adapter. Handles reconnection internally; respects cancellation.
 pub trait Exchange: Send + Sync + 'static {
