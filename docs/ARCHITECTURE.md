@@ -78,14 +78,14 @@ The merged `Summary` is published via `tokio::watch` (latest-value semantics). `
 | SPSC push | ~10 ns | Single atomic store |
 | SPSC pop + merge | 245 ns | k-way merge, 2×20 → top 10 |
 | watch::send | ~50 ns | Atomic swap |
-| **Total hot path** | **~2.1 μs** | Parse + transfer + merge |
+| **Total hot path** | **~2.2 μs** | Parse + transfer + merge |
 | Protobuf encode (cold) | ~1 μs | Per-client, off merger thread |
 
-Production P50 (live exchange data): **6μs**. P99: **sub-20μs**.
+Production P50 (live exchange data, shared hardware): **~9μs**. P99: **~25μs**.
 
 ## Memory Layout
 
-All hot-path types are stack-allocated and `Copy`-safe:
+All hot-path types are stack-allocated (no heap). `Level` is `Copy`; `OrderBook` and `Summary` are `Clone`:
 
 ```
 Level (32 bytes):
@@ -117,6 +117,6 @@ Lock-free Prometheus metrics using `AtomicU64` counters and a custom histogram w
 
 ## Data Integrity
 
-- **Binance `lastUpdateId`**: Tracked per connection for sequence gap detection. Out-of-order or duplicate snapshots are detected and dropped.
+- **Binance `lastUpdateId`**: Tracked for stale/duplicate detection. Out-of-order or duplicate snapshots (where `lastUpdateId` does not increase) are detected and dropped.
 - **Stale book eviction**: If an exchange disconnects, its book is evicted after 5 seconds to prevent stale prices from contaminating the merged output. 5s tolerates network jitter while remaining well under the threshold where stale data creates false arbitrage signals.
 - **Snapshot streams**: Both exchanges provide full order book snapshots (not incremental diffs), so no local book maintenance or sequence reconciliation is required.

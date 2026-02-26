@@ -4,7 +4,7 @@
 
 Real-time order book aggregator that connects to **Binance** and **Bitstamp** WebSocket feeds, merges their order books, and streams the top-10 bid/ask levels with spread via **gRPC**.
 
-Built for latency: **6μs P50, sub-20μs P99** end-to-end (WS frame received → merged summary published). Zero-allocation hot path, SIMD-accelerated JSON parsing, dedicated OS threads with core pinning, and a busy-poll merger.
+Built for latency: **~9μs P50, ~25μs P99** end-to-end on shared hardware (WS frame received → merged summary published). Zero-allocation hot path, SIMD-accelerated JSON parsing, dedicated OS threads with core pinning, and a busy-poll merger.
 
 ![TUI Demo](docs/tui-demo.gif)
 
@@ -16,7 +16,7 @@ Built for latency: **6μs P50, sub-20μs P99** end-to-end (WS frame received →
 | [Benchmarks](docs/BENCHMARKS.md) | Criterion results, production latency, hardware sensitivity, how to reproduce |
 | [Design Tradeoffs](docs/TRADEOFFS.md) | Every major decision with alternatives considered and rationale |
 | [Monitoring](docs/MONITORING.md) | Prometheus metrics, Grafana dashboard, health endpoint |
-| [Testing](docs/TESTING.md) | 53-test suite, coverage breakdown, CI |
+| [Testing](docs/TESTING.md) | 55-test suite, coverage breakdown, CI |
 
 ## Quick Start
 
@@ -80,8 +80,8 @@ See [docs/MONITORING.md](docs/MONITORING.md) for the full metrics table and dash
 | JSON decode (20 levels) | 1.94 μs | Per-exchange SIMD byte walker (`memchr::memmem`) + `FixedPoint::parse` |
 | Merge (2×20 → top 10) | 245 ns | K-way merge with stack-allocated cursors |
 | E2E (parse + merge) | 3.72 μs | Criterion benchmark, synthetic data |
-| **Production E2E P50** | **6 μs** | Live exchange data |
-| **Production E2E P99** | **< 20 μs** | Live exchange data |
+| **Production E2E P50** | **~9 μs** | Live exchange data, shared hardware |
+| **Production E2E P99** | **~25 μs** | Live exchange data, shared hardware |
 
 See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for methodology, full results, and reproduction instructions.
 
@@ -99,7 +99,7 @@ See [docs/TRADEOFFS.md](docs/TRADEOFFS.md) for alternatives considered and full 
 ## Testing
 
 ```bash
-cargo test     # 54 tests
+cargo test     # 55 tests
 cargo clippy   # 0 warnings, unsafe_code = "forbid"
 cargo bench    # Criterion benchmarks
 ```

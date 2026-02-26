@@ -37,11 +37,12 @@ The merge step (245ns) is roughly 8× cheaper than a single exchange decode. The
 
 ### Pipeline Breakdown
 
-For the e2e benchmark (3.72μs):
-- Binance 20-level decode: ~1.94μs (52%)
-- Bitstamp 100-level decode: ~2.16μs → but only top 20 parsed
-- Merge 2×20 → top 10: ~0.25μs (7%)
-- Overhead (function calls, setup): ~0.37μs
+The e2e benchmark (3.72μs) runs both decodes + merge sequentially in a single Criterion iteration. Individual benchmark medians don't sum to 3.72μs because each separate benchmark includes its own per-iteration overhead (function call setup, `black_box`, `Instant::now`). The e2e benchmark amortizes this overhead across the full pipeline:
+
+- Binance 20-level decode: ~1.94μs
+- Bitstamp 100-level decode: ~2.16μs → keeps 20, skips 80
+- Merge 2×20 → top 10: ~0.25μs
+- BookStore insert (2×): ~0.02μs
 
 ## Production Latency
 
@@ -74,7 +75,7 @@ The gap between benchmark e2e (3.72μs) and production P50 (~9μs) is accounted 
 3. Production merge overhead — `evict_stale()` + `Instant::now()` + metrics recording
 4. Shared-server noise — no core isolation, no `isolcpus`, CPU shared with other processes
 
-On dedicated hardware with `isolcpus` and Docker `cpuset`, expect **~6μs P50** and **sub-20μs P99**.
+With dedicated hardware, `isolcpus`, and Docker `cpuset`, the gap narrows -- WS allocation and SPSC wait time are largely eliminated by warm caches and zero preemption.
 
 ## Hardware Sensitivity
 

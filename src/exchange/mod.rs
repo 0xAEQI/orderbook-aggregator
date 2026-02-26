@@ -90,6 +90,11 @@ fn parse_levels(exchange: &'static str, raw: &[[&str; 2]]) -> Option<ArrayVec<Le
     for &[price, amount] in raw {
         let p = FixedPoint::parse(price)?;
         let a = FixedPoint::parse(amount)?;
+        // Skip cleared levels (amount=0). Binance sends "0.00000000" for
+        // price levels that have been fully consumed or cancelled.
+        if a.raw() == 0 {
+            continue;
+        }
         if levels
             .try_push(Level {
                 exchange,
@@ -324,5 +329,19 @@ mod tests {
         let (mut producer, consumer) = rtrb::RingBuffer::new(4);
         drop(consumer); // Abandon the consumer.
         assert!(!try_send_book(&mut producer, test_book("a"), "a"));
+    }
+
+    #[test]
+    fn parse_levels_filters_zero_amount() {
+        // Binance sends amount="0.00000000" for cleared price levels.
+        let raw = [
+            ["100.0", "5.0"],
+            ["99.0", "0.00000000"], // cleared level
+            ["98.0", "3.0"],
+        ];
+        let levels = parse_levels("test", &raw).unwrap();
+        assert_eq!(levels.len(), 2);
+        assert_eq!(levels[0].price, FixedPoint::parse("100.0").unwrap());
+        assert_eq!(levels[1].price, FixedPoint::parse("98.0").unwrap());
     }
 }

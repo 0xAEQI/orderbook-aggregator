@@ -1,7 +1,9 @@
 //! Core domain types for order book data.
 //!
-//! All types on the hot path are stack-allocated via [`ArrayVec`] and [`Copy`]
-//! to avoid heap allocation between WebSocket receive and merge output.
+//! All types on the hot path are stack-allocated via [`ArrayVec`] -- no heap
+//! allocation between WebSocket receive and merge output. [`Level`] is `Copy`;
+//! [`OrderBook`] and [`Summary`] are `Clone` (stack-allocated but too large
+//! for implicit copies).
 
 use std::fmt;
 use std::time::Instant;

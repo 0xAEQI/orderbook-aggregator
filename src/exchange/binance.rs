@@ -95,7 +95,7 @@ impl WsHandler for BinanceHandler {
             return HandleResult::Continue;
         };
 
-        // Sequence gap detection: lastUpdateId should increase monotonically.
+        // Stale/duplicate detection: lastUpdateId should increase monotonically.
         if seq > 0 && self.last_seq > 0 && seq <= self.last_seq {
             warn!(
                 exchange = "binance",

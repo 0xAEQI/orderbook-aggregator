@@ -3,14 +3,14 @@
 ## Running
 
 ```bash
-cargo test     # 54 tests
+cargo test     # 55 tests
 cargo clippy   # 0 warnings, unsafe_code = "forbid"
 cargo bench    # Criterion benchmarks (see BENCHMARKS.md)
 ```
 
 ## Coverage
 
-54 tests covering:
+55 tests covering:
 
 **Integration** -- end-to-end gRPC stream: mock exchange data through SPSC merger to gRPC client.
 
@@ -18,7 +18,7 @@ cargo bench    # Criterion benchmarks (see BENCHMARKS.md)
 
 **BookStore** -- insert-overwrites-existing, overflow beyond MAX_EXCHANGES silently dropped, evict_stale keeps fresh books.
 
-**SPSC ring** -- ring-full drops snapshot (returns true), consumer-abandoned returns false.
+**SPSC ring** -- ring-full drops snapshot (returns true), consumer-abandoned returns false, zero-amount levels filtered.
 
 **Health endpoint** -- all-connected returns OK, partial returns DEGRADED, none returns DOWN (503).
 
@@ -36,8 +36,10 @@ cargo bench    # Criterion benchmarks (see BENCHMARKS.md)
 
 GitHub Actions runs on every push and PR:
 
-1. `cargo clippy --all-targets -- -D warnings`
-2. `cargo test`
-3. `cargo build --release`
+1. `cargo fmt --check`
+2. `cargo clippy --all-targets -- -D warnings`
+3. `cargo test`
+4. `cargo audit`
+5. `cargo build --release`
 
 Config: `.github/workflows/ci.yml`
