@@ -1,21 +1,26 @@
 //! Order book merger.
 //!
-//! Receives [`OrderBook`] updates from all exchanges via an mpsc channel
-//! (move semantics — no clone overhead), maintains the latest book per
-//! exchange, and publishes merged [`Summary`] snapshots via a `tokio::watch`
-//! channel.
+//! Runs on a **dedicated OS thread** with a busy-poll loop over per-exchange
+//! SPSC ring buffers (`rtrb`). No tokio runtime, no async overhead — just
+//! `pop()` + `core::hint::spin_loop()` (PAUSE on x86). Burns one CPU core
+//! for minimum wake-up latency.
+//!
+//! Maintains the latest book per exchange and publishes merged [`Summary`]
+//! snapshots via a `tokio::watch` channel (`send()` is sync — no runtime
+//! needed).
 //!
 //! Uses a k-way merge of pre-sorted exchange books: `O(TOP_N × k)` comparisons
 //! instead of `O(n log n)` concat+sort. For 2 exchanges × 20 levels → top 10,
 //! that's ~20 comparisons vs ~212.
 
 use std::cmp::Ordering;
-use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
 
 use arrayvec::ArrayVec;
-use tokio::sync::{mpsc, watch};
+use rtrb::Consumer;
+use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::metrics::Metrics;
@@ -94,42 +99,80 @@ impl BookStore {
     }
 }
 
-/// Runs the merger loop until channel closure.
+
+/// Runs the merger on a dedicated OS thread. Spin-polls SPSC ring buffers,
+/// merges, and publishes via `watch` (sync send — no tokio runtime needed).
 ///
-/// Uses a tight `recv()` loop instead of `tokio::select!` with cancellation —
-/// eliminates the per-message overhead of creating and polling a cancellation
-/// future. Shutdown propagates naturally: cancellation → adapters exit → senders
-/// drop → channel closes → `recv()` returns `None`.
-pub async fn run(
-    mut rx: mpsc::Receiver<OrderBook>,
-    summary_tx: watch::Sender<Summary>,
-    metrics: Arc<Metrics>,
+/// Exits when all producers are dropped or cancellation is signalled.
+pub fn run_spsc(
+    mut consumers: Vec<Consumer<OrderBook>>,
+    summary_tx: &watch::Sender<Summary>,
+    metrics: &Metrics,
+    cancel: &CancellationToken,
 ) {
-    let mut books = BookStore::new();
-
-    info!("merger started");
-
-    while let Some(book) = rx.recv().await {
-        let decode_start = book.decode_start;
-        books.insert(book);
-
-        let t0 = Instant::now();
-        books.evict_stale(t0, STALE_THRESHOLD);
-        let summary = merge(&books);
-        metrics.merge_latency.record(t0.elapsed());
-        metrics.merges.fetch_add(1, Relaxed);
-        debug!(
-            spread = summary.spread,
-            bids = summary.bids.len(),
-            asks = summary.asks.len(),
-            "merged"
-        );
-        let _ = summary_tx.send(summary);
-        // e2e: WS frame received → merged summary published.
-        metrics.e2e_latency.record(decode_start.elapsed());
+    // Pin to the last available core — isolates the merger from exchange threads
+    // and tokio workers which naturally spread across the remaining cores.
+    // With Docker `cpuset`, this pins to the last core in the allowed set.
+    if let Some(cores) = core_affinity::get_core_ids()
+        && let Some(&core) = cores.last()
+    {
+        if core_affinity::set_for_current(core) {
+            info!(core_id = core.id, "merger pinned to core");
+        } else {
+            warn!("failed to pin merger to core");
+        }
     }
 
-    info!("mpsc channel closed, merger exiting");
+    let mut books = BookStore::new();
+
+    info!("merger started (SPSC busy-poll, {} consumers)", consumers.len());
+
+    loop {
+        if cancel.is_cancelled() {
+            info!("merger cancelled");
+            break;
+        }
+
+        // All producers dropped → no more data.
+        if consumers.iter().all(Consumer::is_abandoned) {
+            info!("all producers dropped, merger exiting");
+            break;
+        }
+
+        let mut got_any = false;
+        let mut latest_decode_start = Instant::now();
+
+        // Drain all available snapshots before merging. If both exchanges pushed
+        // in the same spin cycle, we merge once with the freshest data from each
+        // instead of merging twice (first with stale data from the other).
+        for consumer in &mut consumers {
+            while let Ok(book) = consumer.pop() {
+                got_any = true;
+                latest_decode_start = book.decode_start;
+                books.insert(book);
+            }
+        }
+
+        if got_any {
+            let t0 = Instant::now();
+            books.evict_stale(t0, STALE_THRESHOLD);
+            let summary = merge(&books);
+            metrics.merge_latency.record(t0.elapsed());
+            metrics.merges.fetch_add(1, Relaxed);
+            debug!(
+                spread = summary.spread,
+                bids = summary.bids.len(),
+                asks = summary.asks.len(),
+                "merged"
+            );
+            let _ = summary_tx.send(summary);
+            metrics.e2e_latency.record(latest_decode_start.elapsed());
+        } else {
+            core::hint::spin_loop();
+        }
+    }
+
+    info!("merger exiting");
 }
 
 /// K-way merge of pre-sorted slices → top `n`. O(n × k) comparisons, zero alloc.

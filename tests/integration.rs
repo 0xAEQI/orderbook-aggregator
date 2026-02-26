@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tonic::Request;
 
@@ -16,19 +16,29 @@ use orderbook_aggregator::server::proto::orderbook_aggregator_server::OrderbookA
 use orderbook_aggregator::server::{proto, OrderbookService};
 use orderbook_aggregator::types::{FixedPoint, Level, OrderBook, Summary};
 
-/// End-to-end: mock exchange data → merger → gRPC server → gRPC client.
+/// End-to-end: mock exchange data → SPSC → merger → gRPC server → gRPC client.
 #[tokio::test]
 async fn grpc_streams_merged_summary() {
-    let (book_tx, book_rx) = mpsc::channel(16);
+    let (mut prod_a, cons_a) = rtrb::RingBuffer::new(16);
+    let (mut prod_b, cons_b) = rtrb::RingBuffer::new(16);
     let (summary_tx, summary_rx) = watch::channel(Summary::default());
     let cancel = CancellationToken::new();
     let metrics = Arc::new(Metrics::register(&["test_a", "test_b"]));
 
-    // Merger task.
-    tokio::spawn({
-        let metrics = metrics.clone();
-        async move { merger::run(book_rx, summary_tx, metrics).await }
-    });
+    // Merger on a dedicated OS thread (matches production architecture).
+    let merger_cancel = cancel.clone();
+    let merger_metrics = metrics.clone();
+    let merger_thread = std::thread::Builder::new()
+        .name("test-merger".into())
+        .spawn(move || {
+            merger::run_spsc(
+                vec![cons_a, cons_b],
+                &summary_tx,
+                &merger_metrics,
+                &merger_cancel,
+            );
+        })
+        .unwrap();
 
     // gRPC server on ephemeral port.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -69,9 +79,9 @@ async fn grpc_streams_merged_summary() {
         .unwrap()
         .into_inner();
 
-    // Push order books from two exchanges.
-    book_tx
-        .send(OrderBook {
+    // Push order books via SPSC producers (sync, no .await needed).
+    prod_a
+        .push(OrderBook {
             exchange: "test_a",
             bids: [Level {
                 exchange: "test_a",
@@ -89,11 +99,10 @@ async fn grpc_streams_merged_summary() {
             .collect(),
             decode_start: Instant::now(),
         })
-        .await
-        .unwrap();
+        .expect("push test_a");
 
-    book_tx
-        .send(OrderBook {
+    prod_b
+        .push(OrderBook {
             exchange: "test_b",
             bids: [Level {
                 exchange: "test_b",
@@ -111,8 +120,7 @@ async fn grpc_streams_merged_summary() {
             .collect(),
             decode_start: Instant::now(),
         })
-        .await
-        .unwrap();
+        .expect("push test_b");
 
     // Read until we get the fully-merged summary (both exchanges present).
     let summary = tokio::time::timeout(Duration::from_secs(2), async {
@@ -144,4 +152,5 @@ async fn grpc_streams_merged_summary() {
     assert_eq!(summary.asks.len(), 2);
 
     cancel.cancel();
+    merger_thread.join().unwrap();
 }

@@ -1,18 +1,15 @@
 //! Binance partial book depth WebSocket adapter.
 //!
-//! Connects to the partial depth stream which provides a snapshot of the top 20
-//! price levels every 100ms — no sequence tracking or REST snapshot needed.
-//!
-//! Uses a custom byte walker for zero-copy JSON parsing — scans directly to
-//! `bids`/`asks` arrays, borrowing `&str` slices from the WS frame buffer.
-//! No serde, no simd-json, no heap allocation.
+//! Runs on a dedicated OS thread with its own `current_thread` tokio runtime.
+//! Pushes parsed [`OrderBook`] snapshots into an SPSC ring buffer — the push
+//! is a single `store(Release)`, no CAS.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
 
 use futures_util::StreamExt;
-use tokio::sync::mpsc;
+use rtrb::Producer;
 use tokio_tungstenite::connect_async_tls_with_config;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
@@ -34,7 +31,7 @@ impl Exchange for Binance {
     async fn connect(
         &self,
         symbol: String,
-        sender: mpsc::Sender<OrderBook>,
+        mut producer: Producer<OrderBook>,
         cancel: CancellationToken,
     ) -> Result<()> {
         let url = format!(
@@ -69,8 +66,6 @@ impl Exchange for Binance {
                     backoff_ms = super::INITIAL_BACKOFF_MS;
                     let mut last_seq: u64 = 0;
 
-                    // Keep write half alive — tungstenite's codec flushes Pong
-                    // replies through the BiLock on each read() call.
                     let (_write, mut read) = ws_stream.split();
 
                     loop {
@@ -107,8 +102,7 @@ impl Exchange for Binance {
                         };
 
                         // Sequence gap detection: lastUpdateId should increase
-                        // monotonically. A gap means we missed snapshots — log it
-                        // so monitoring can alert.
+                        // monotonically. A gap means we missed snapshots.
                         if seq > 0 && last_seq > 0 && seq <= last_seq {
                             warn!(
                                 exchange = "binance",
@@ -127,7 +121,7 @@ impl Exchange for Binance {
                         };
                         self.metrics.decode_latency.record(t0.elapsed());
                         self.metrics.messages.fetch_add(1, Relaxed);
-                        if !super::try_send_book(&sender, book, "binance") {
+                        if !super::try_send_book(&mut producer, book, "binance") {
                             return Ok(());
                         }
                     }
@@ -144,6 +138,7 @@ impl Exchange for Binance {
                 return Ok(());
             }
 
+            self.metrics.reconnections.fetch_add(1, Relaxed);
             if !super::backoff_sleep(&mut backoff_ms, super::MAX_BACKOFF_MS, "binance", &cancel).await {
                 return Ok(());
             }
@@ -163,7 +158,6 @@ mod tests {
     use super::*;
     use crate::types::FixedPoint;
 
-    /// Realistic Binance depth20 payload (truncated to 3 levels per side for clarity).
     const BINANCE_JSON: &str = r#"{
         "lastUpdateId": 123456789,
         "bids": [
@@ -186,24 +180,20 @@ mod tests {
         assert_eq!(book.bids.len(), 3);
         assert_eq!(book.asks.len(), 3);
 
-        // Bids: highest first (exchange sends them sorted).
         assert_eq!(book.bids[0].price, FixedPoint::parse("0.06824000").unwrap());
         assert_eq!(book.bids[0].amount, FixedPoint::parse("12.50000000").unwrap());
         assert_eq!(book.bids[2].price, FixedPoint::parse("0.06822000").unwrap());
 
-        // Asks: lowest first.
         assert_eq!(book.asks[0].price, FixedPoint::parse("0.06825000").unwrap());
         assert_eq!(book.asks[0].amount, FixedPoint::parse("10.00000000").unwrap());
         assert_eq!(book.asks[2].price, FixedPoint::parse("0.06827000").unwrap());
 
-        // All levels attributed to binance.
         assert!(book.bids.iter().all(|l| l.exchange == "binance"));
         assert!(book.asks.iter().all(|l| l.exchange == "binance"));
     }
 
     #[test]
     fn parse_binance_ignores_unknown_fields() {
-        // Binance may add fields; walker should skip them.
         let json = r#"{
             "lastUpdateId": 999,
             "E": 1234567890,

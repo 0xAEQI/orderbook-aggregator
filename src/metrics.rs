@@ -140,6 +140,7 @@ pub struct ExchangeMetrics {
     pub name: &'static str,
     pub messages: AtomicU64,
     pub errors: AtomicU64,
+    pub reconnections: AtomicU64,
     pub connected: AtomicBool,
     pub decode_latency: PromHistogram,
 }
@@ -150,6 +151,7 @@ impl ExchangeMetrics {
             name,
             messages: AtomicU64::new(0),
             errors: AtomicU64::new(0),
+            reconnections: AtomicU64::new(0),
             connected: AtomicBool::new(false),
             decode_latency: PromHistogram::new(),
         }
@@ -232,6 +234,22 @@ impl Metrics {
                 "orderbook_errors_total{{exchange=\"{}\"}} {}",
                 ex.name,
                 ex.errors.load(Relaxed)
+            )
+            .unwrap();
+        }
+
+        writeln!(
+            out,
+            "# HELP orderbook_reconnections_total WebSocket reconnection attempts"
+        )
+        .unwrap();
+        writeln!(out, "# TYPE orderbook_reconnections_total counter").unwrap();
+        for ex in &self.exchanges {
+            writeln!(
+                out,
+                "orderbook_reconnections_total{{exchange=\"{}\"}} {}",
+                ex.name,
+                ex.reconnections.load(Relaxed)
             )
             .unwrap();
         }

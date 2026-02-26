@@ -1,36 +1,26 @@
 use std::sync::Arc;
 
 use clap::Parser;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 use tracing::info;
 
 use orderbook_aggregator::config::Config;
-use orderbook_aggregator::exchange::{Exchange, binance::Binance, bitstamp::Bitstamp};
+use orderbook_aggregator::exchange::binance::Binance;
+use orderbook_aggregator::exchange::bitstamp::Bitstamp;
+use orderbook_aggregator::exchange::Exchange;
+use orderbook_aggregator::merger;
+
+/// Capacity of each per-exchange SPSC ring buffer. Small by design — for order
+/// book data only the latest snapshot matters. A small ring ensures the merger
+/// processes fresh data after any delay, instead of draining 64 stale snapshots.
+const RING_BUFFER_CAPACITY: usize = 4;
 use orderbook_aggregator::metrics::{self, Metrics};
 use orderbook_aggregator::server::{
     OrderbookService, proto::orderbook_aggregator_server::OrderbookAggregatorServer,
 };
-use orderbook_aggregator::types::{self, Summary};
-use orderbook_aggregator::merger;
-
-/// Capacity of the mpsc channel between exchange adapters and the merger.
-const BOOK_CHANNEL_CAPACITY: usize = 64;
-
-fn spawn_exchange(
-    exchange: impl Exchange,
-    name: &'static str,
-    symbol: String,
-    tx: mpsc::Sender<types::OrderBook>,
-    cancel: CancellationToken,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        if let Err(e) = exchange.connect(symbol, tx, cancel).await {
-            tracing::error!(exchange = name, error = %e, "fatal error");
-        }
-    })
-}
+use orderbook_aggregator::types::Summary;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -60,57 +50,75 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register metrics — adding a new exchange is a one-line change here.
     let metrics = Arc::new(Metrics::register(&["binance", "bitstamp"]));
 
-    // mpsc channel for exchange → merger (move semantics, no broadcast clone overhead).
-    let (book_tx, book_rx) = mpsc::channel::<types::OrderBook>(BOOK_CHANNEL_CAPACITY);
+    // SPSC ring buffers: one per exchange. Small ring — only latest snapshot matters.
+    // Only store(Release) / load(Acquire) — no CAS, no contention.
+    let (binance_prod, binance_cons) = rtrb::RingBuffer::new(RING_BUFFER_CAPACITY);
+    let (bitstamp_prod, bitstamp_cons) = rtrb::RingBuffer::new(RING_BUFFER_CAPACITY);
 
     // Watch channel for merger → gRPC server (latest-value semantics).
     let (summary_tx, summary_rx) = watch::channel(Summary::default());
 
-    let binance_handle = spawn_exchange(
-        Binance { metrics: metrics.exchange("binance") },
-        "binance",
-        config.symbol.clone(),
-        book_tx.clone(),
-        cancel.clone(),
-    );
-    let bitstamp_handle = spawn_exchange(
-        Bitstamp { metrics: metrics.exchange("bitstamp") },
-        "bitstamp",
-        config.symbol.clone(),
-        book_tx.clone(),
-        cancel.clone(),
-    );
+    // --- Dedicated OS threads ---
+    // Each exchange gets its own OS thread with a single-threaded tokio runtime.
+    // Isolates WS I/O from the main runtime — no work-stealing scheduler jitter.
 
-    // Drop the original sender so channel closes when exchanges stop.
-    drop(book_tx);
-
-    // Spawn merger task.
-    let merger_handle = {
-        let metrics = metrics.clone();
-        tokio::spawn(async move {
-            merger::run(book_rx, summary_tx, metrics).await;
-        })
-    };
-
-    // Spawn metrics/health HTTP server.
-    let http_handle = {
+    let binance_thread = {
+        let metrics = metrics.exchange("binance");
+        let symbol = config.symbol.clone();
         let cancel = cancel.clone();
-        let metrics = metrics.clone();
-        tokio::spawn(async move {
-            metrics::serve_http(config.metrics_port, metrics, cancel).await;
-        })
+        std::thread::Builder::new()
+            .name("ws-binance".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("binance tokio runtime");
+                rt.block_on(async {
+                    let binance = Binance { metrics };
+                    if let Err(e) = binance.connect(symbol, binance_prod, cancel).await {
+                        tracing::error!(exchange = "binance", error = %e, "fatal error");
+                    }
+                });
+            })?
     };
 
-    // gRPC server on the pre-bound listener.
-    let service = OrderbookService::new(summary_rx);
-    let incoming = tokio_stream::wrappers::TcpListenerStream::new(grpc_listener);
+    let bitstamp_thread = {
+        let metrics = metrics.exchange("bitstamp");
+        let symbol = config.symbol.clone();
+        let cancel = cancel.clone();
+        std::thread::Builder::new()
+            .name("ws-bitstamp".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("bitstamp tokio runtime");
+                rt.block_on(async {
+                    let bitstamp = Bitstamp { metrics };
+                    if let Err(e) = bitstamp.connect(symbol, bitstamp_prod, cancel).await {
+                        tracing::error!(exchange = "bitstamp", error = %e, "fatal error");
+                    }
+                });
+            })?
+    };
 
-    let server_cancel = cancel.clone();
-    let server = Server::builder()
-        .add_service(OrderbookAggregatorServer::new(service))
-        .serve_with_incoming_shutdown(incoming, async move {
-            server_cancel.cancelled().await;
-        });
+    // Merger on a dedicated OS thread — plain spin-poll loop, no tokio runtime.
+    let merger_thread = {
+        let metrics = metrics.clone();
+        let cancel = cancel.clone();
+        std::thread::Builder::new()
+            .name("merger".into())
+            .spawn(move || {
+                merger::run_spsc(
+                    vec![binance_cons, bitstamp_cons],
+                    &summary_tx,
+                    &metrics,
+                    &cancel,
+                );
+            })?
+    };
+
+    info!("spawned 3 dedicated OS threads: ws-binance, ws-bitstamp, merger");
 
     // Shutdown signal handler (SIGINT + SIGTERM).
     let shutdown_cancel = cancel.clone();
@@ -134,11 +142,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown_cancel.cancel();
     });
 
+    // Spawn metrics/health HTTP server.
+    let http_handle = {
+        let cancel = cancel.clone();
+        let metrics = metrics.clone();
+        tokio::spawn(async move {
+            metrics::serve_http(config.metrics_port, metrics, cancel).await;
+        })
+    };
+
+    // gRPC server on the pre-bound listener.
+    let service = OrderbookService::new(summary_rx);
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(grpc_listener);
+
+    let server_cancel = cancel.clone();
+    let server = Server::builder()
+        .add_service(OrderbookAggregatorServer::new(service))
+        .serve_with_incoming_shutdown(incoming, async move {
+            server_cancel.cancelled().await;
+        });
+
     // Run server (blocks until shutdown).
     server.await?;
 
-    // Wait for all tasks to finish.
-    let _ = tokio::join!(binance_handle, bitstamp_handle, merger_handle, http_handle);
+    // Wait for HTTP to finish.
+    let _ = http_handle.await;
+
+    // Join OS threads (should already be exiting due to cancellation).
+    let _ = binance_thread.join();
+    let _ = bitstamp_thread.join();
+    let _ = merger_thread.join();
 
     info!("shutdown complete");
     Ok(())
