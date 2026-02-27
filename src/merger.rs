@@ -205,11 +205,8 @@ fn merge_top_n(
                 best = Some(match best {
                     None => i,
                     Some(b)
-                        if cmp(
-                            &slices[i].levels[cursors[i]],
-                            &slices[b].levels[cursors[b]],
-                        )
-                        .is_lt() =>
+                        if cmp(&slices[i].levels[cursors[i]], &slices[b].levels[cursors[b]])
+                            .is_lt() =>
                     {
                         i
                     }
@@ -299,7 +296,8 @@ fn pin_to_last_core() {
             let core = (cpus - 1) as usize;
             let mut set = unsafe { std::mem::zeroed::<libc::cpu_set_t>() };
             unsafe { libc::CPU_SET(core, &mut set) };
-            let ret = unsafe { libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &raw const set) };
+            let ret =
+                unsafe { libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &raw const set) };
             if ret == 0 {
                 info!(core_id = core, "merger pinned to core");
             } else {
@@ -342,14 +340,14 @@ mod tests {
 
         books.insert(book(
             "binance",
-            &[raw( 100.0, 5.0), raw( 99.0, 3.0)],
-            &[raw( 101.0, 4.0), raw( 102.0, 2.0)],
+            &[raw(100.0, 5.0), raw(99.0, 3.0)],
+            &[raw(101.0, 4.0), raw(102.0, 2.0)],
         ));
 
         books.insert(book(
             "bitstamp",
-            &[raw( 100.5, 2.0), raw( 99.5, 1.0)],
-            &[raw( 100.8, 3.0), raw( 101.5, 1.0)],
+            &[raw(100.5, 2.0), raw(99.5, 1.0)],
+            &[raw(100.8, 3.0), raw(101.5, 1.0)],
         ));
 
         let summary = merge(&books);
@@ -374,12 +372,10 @@ mod tests {
     fn merge_truncates_to_top_10() {
         let mut books = BookStore::new();
 
-        let many_bids: ArrayVec<RawLevel, { crate::types::MAX_LEVELS }> = (0..15)
-            .map(|i| raw(100.0 - f64::from(i), 1.0))
-            .collect();
-        let many_asks: ArrayVec<RawLevel, { crate::types::MAX_LEVELS }> = (0..15)
-            .map(|i| raw(101.0 + f64::from(i), 1.0))
-            .collect();
+        let many_bids: ArrayVec<RawLevel, { crate::types::MAX_LEVELS }> =
+            (0..15).map(|i| raw(100.0 - f64::from(i), 1.0)).collect();
+        let many_asks: ArrayVec<RawLevel, { crate::types::MAX_LEVELS }> =
+            (0..15).map(|i| raw(101.0 + f64::from(i), 1.0)).collect();
 
         books.insert(OrderBook {
             exchange: "binance",
@@ -408,8 +404,8 @@ mod tests {
         let mut books = BookStore::new();
 
         // Same price from two exchanges -- larger amount should come first.
-        books.insert(book("a", &[raw( 100.0, 1.0)], &[]));
-        books.insert(book("b", &[raw( 100.0, 5.0)], &[]));
+        books.insert(book("a", &[raw(100.0, 1.0)], &[]));
+        books.insert(book("b", &[raw(100.0, 5.0)], &[]));
 
         let summary = merge(&books);
         assert_eq!(summary.bids[0].amount, FixedPoint::from_f64(5.0));
@@ -423,8 +419,8 @@ mod tests {
         // Only one exchange connected -- common during startup and reconnection.
         books.insert(book(
             "binance",
-            &[raw( 100.0, 5.0), raw( 99.0, 3.0)],
-            &[raw( 101.0, 4.0), raw( 102.0, 2.0)],
+            &[raw(100.0, 5.0), raw(99.0, 3.0)],
+            &[raw(101.0, 4.0), raw(102.0, 2.0)],
         ));
 
         let summary = merge(&books);
@@ -442,16 +438,8 @@ mod tests {
 
         // Exchange A's best bid (102) exceeds Exchange B's best ask (101) -- crossed book.
         // Real scenario in multi-exchange aggregation with latency skew.
-        books.insert(book(
-            "a",
-            &[raw( 102.0, 1.0)],
-            &[raw( 103.0, 1.0)],
-        ));
-        books.insert(book(
-            "b",
-            &[raw( 99.0, 1.0)],
-            &[raw( 101.0, 1.0)],
-        ));
+        books.insert(book("a", &[raw(102.0, 1.0)], &[raw(103.0, 1.0)]));
+        books.insert(book("b", &[raw(99.0, 1.0)], &[raw(101.0, 1.0)]));
 
         let summary = merge(&books);
         assert_eq!(summary.bids[0].price, FixedPoint::from_f64(102.0));
@@ -467,8 +455,8 @@ mod tests {
         let mut books = BookStore::new();
 
         // Same ask price from two exchanges -- larger amount should come first.
-        books.insert(book("a", &[], &[raw( 100.0, 1.0)]));
-        books.insert(book("b", &[], &[raw( 100.0, 5.0)]));
+        books.insert(book("a", &[], &[raw(100.0, 1.0)]));
+        books.insert(book("b", &[], &[raw(100.0, 5.0)]));
 
         let summary = merge(&books);
         assert_eq!(summary.asks[0].amount, FixedPoint::from_f64(5.0));
@@ -483,20 +471,12 @@ mod tests {
         // Expected merged bids: 100, 99, 98, 97, 96, 95
         books.insert(book(
             "binance",
-            &[
-                raw( 100.0, 1.0),
-                raw( 98.0, 1.0),
-                raw( 96.0, 1.0),
-            ],
+            &[raw(100.0, 1.0), raw(98.0, 1.0), raw(96.0, 1.0)],
             &[],
         ));
         books.insert(book(
             "bitstamp",
-            &[
-                raw( 99.0, 1.0),
-                raw( 97.0, 1.0),
-                raw( 95.0, 1.0),
-            ],
+            &[raw(99.0, 1.0), raw(97.0, 1.0), raw(95.0, 1.0)],
             &[],
         ));
 
@@ -512,18 +492,14 @@ mod tests {
         // Insert a book with a very old decode_start.
         let old_book = OrderBook {
             exchange: "stale_ex",
-            bids: [raw( 100.0, 1.0)].into_iter().collect(),
-            asks: [raw( 101.0, 1.0)].into_iter().collect(),
+            bids: [raw(100.0, 1.0)].into_iter().collect(),
+            asks: [raw(101.0, 1.0)].into_iter().collect(),
             decode_start: Instant::now().checked_sub(Duration::from_secs(10)).unwrap(),
         };
         books.insert(old_book);
 
         // Fresh book.
-        books.insert(book(
-            "fresh_ex",
-            &[raw( 99.0, 2.0)],
-            &[raw( 102.0, 3.0)],
-        ));
+        books.insert(book("fresh_ex", &[raw(99.0, 2.0)], &[raw(102.0, 3.0)]));
 
         books.evict_stale(Instant::now(), STALE_THRESHOLD);
         let summary = merge(&books);
@@ -537,17 +513,9 @@ mod tests {
     fn bookstore_insert_updates_existing() {
         let mut books = BookStore::new();
 
-        books.insert(book(
-            "binance",
-            &[raw( 100.0, 1.0)],
-            &[raw( 101.0, 1.0)],
-        ));
+        books.insert(book("binance", &[raw(100.0, 1.0)], &[raw(101.0, 1.0)]));
         // Second insert with same exchange name should overwrite.
-        books.insert(book(
-            "binance",
-            &[raw( 200.0, 5.0)],
-            &[raw( 201.0, 5.0)],
-        ));
+        books.insert(book("binance", &[raw(200.0, 5.0)], &[raw(201.0, 5.0)]));
 
         let summary = merge(&books);
         // Should see the updated price, not the original.
@@ -561,10 +529,10 @@ mod tests {
         let mut books = BookStore::new();
 
         // MAX_EXCHANGES is 2 -- fill both slots.
-        books.insert(book("a", &[raw( 100.0, 1.0)], &[]));
-        books.insert(book("b", &[raw( 99.0, 1.0)], &[]));
+        books.insert(book("a", &[raw(100.0, 1.0)], &[]));
+        books.insert(book("b", &[raw(99.0, 1.0)], &[]));
         // Third exchange should be silently dropped.
-        books.insert(book("c", &[raw( 98.0, 1.0)], &[]));
+        books.insert(book("c", &[raw(98.0, 1.0)], &[]));
 
         let summary = merge(&books);
         // Only 2 levels (from a and b), not 3.
@@ -580,16 +548,8 @@ mod tests {
         let mut books = BookStore::new();
 
         // Insert two fresh books (decode_start = now).
-        books.insert(book(
-            "binance",
-            &[raw( 100.0, 1.0)],
-            &[raw( 101.0, 1.0)],
-        ));
-        books.insert(book(
-            "bitstamp",
-            &[raw( 99.0, 2.0)],
-            &[raw( 102.0, 2.0)],
-        ));
+        books.insert(book("binance", &[raw(100.0, 1.0)], &[raw(101.0, 1.0)]));
+        books.insert(book("bitstamp", &[raw(99.0, 2.0)], &[raw(102.0, 2.0)]));
 
         // Evict with current time -- neither should be evicted.
         books.evict_stale(Instant::now(), STALE_THRESHOLD);

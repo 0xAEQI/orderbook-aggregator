@@ -95,7 +95,13 @@ fn parse_levels(raw: &[[&str; 2]]) -> Option<ArrayVec<RawLevel, MAX_LEVELS>> {
         if a.raw() == 0 {
             continue;
         }
-        if levels.try_push(RawLevel { price: p, amount: a }).is_err() {
+        if levels
+            .try_push(RawLevel {
+                price: p,
+                amount: a,
+            })
+            .is_err()
+        {
             break;
         }
     }
