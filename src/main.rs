@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     let bitstamp_thread = spawn_exchange(
-        BitstampHandler,
+        BitstampHandler::new(),
         config.symbol.clone(),
         bitstamp_prod,
         metrics.exchange("bitstamp"),

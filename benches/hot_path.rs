@@ -11,7 +11,7 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use orderbook_aggregator::exchange::binance::parse_depth_json;
 use orderbook_aggregator::exchange::bitstamp::parse_order_book_json;
 use orderbook_aggregator::merger::{BookStore, merge};
-use orderbook_aggregator::types::{FixedPoint, Level, OrderBook};
+use orderbook_aggregator::types::{FixedPoint, OrderBook, RawLevel};
 
 // ── JSON payloads ────────────────────────────────────────────────────────────
 
@@ -50,15 +50,13 @@ fn make_book(exchange: &'static str, base_bid: f64, base_ask: f64, n: usize) -> 
     OrderBook {
         exchange,
         bids: (0..n)
-            .map(|i| Level {
-                exchange,
+            .map(|i| RawLevel {
                 price: FixedPoint::from_f64(base_bid - i as f64 * 0.001),
                 amount: FixedPoint::from_f64(10.0 - (i % 8) as f64),
             })
             .collect(),
         asks: (0..n)
-            .map(|i| Level {
-                exchange,
+            .map(|i| RawLevel {
                 price: FixedPoint::from_f64(base_ask + i as f64 * 0.001),
                 amount: FixedPoint::from_f64(8.0 - (i % 6) as f64),
             })

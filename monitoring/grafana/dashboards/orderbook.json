@@ -559,7 +559,7 @@
       "description": "Total WebSocket reconnection attempts per exchange. Non-zero indicates network instability or exchange-side disconnects.",
       "type": "stat",
       "id": 9,
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 21 },
+      "gridPos": { "h": 8, "w": 4, "x": 12, "y": 21 },
       "targets": [
         {
           "expr": "orderbook_reconnections_total",
@@ -593,10 +593,44 @@
       "description": "Total parse/connection errors per exchange. Includes parse failures, malformed levels, sequence gaps, and connection errors.",
       "type": "stat",
       "id": 14,
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 21 },
+      "gridPos": { "h": 8, "w": 4, "x": 16, "y": 21 },
       "targets": [
         {
           "expr": "orderbook_errors_total",
+          "legendFormat": "{{exchange}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "textMode": "auto",
+        "colorMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "title": "Ring Drops (by exchange)",
+      "description": "Snapshots dropped because the SPSC ring buffer was full. Non-zero means the merger thread cannot keep up with exchange update rate.",
+      "type": "stat",
+      "id": 15,
+      "gridPos": { "h": 8, "w": 4, "x": 20, "y": 21 },
+      "targets": [
+        {
+          "expr": "orderbook_ring_drops_total",
           "legendFormat": "{{exchange}}",
           "refId": "A"
         }

@@ -10,8 +10,9 @@
 //! (`rtrb`). The ring uses only `store(Release)` / `load(Acquire)` -- no CAS,
 //! no contention with the merger thread.
 //!
-//! Connections use `TCP_NODELAY` and `write_buffer_size: 0` for immediate frame
-//! flushing.
+//! Connections use `write_buffer_size: 0` for immediate frame flushing.
+//! Note: `TCP_NODELAY` is not explicitly set -- `tokio-tungstenite` does not
+//! expose the underlying `TcpStream` before the WebSocket upgrade.
 
 pub mod binance;
 pub mod bitstamp;
@@ -28,9 +29,8 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use crate::error::Result;
 use crate::metrics::ExchangeMetrics;
-use crate::types::{FixedPoint, Level, MAX_LEVELS, OrderBook};
+use crate::types::{FixedPoint, MAX_LEVELS, OrderBook, RawLevel};
 
 /// Connection timeout for WebSocket handshake.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -83,9 +83,9 @@ pub fn ws_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig 
     }
 }
 
-/// `[price, qty]` string pairs → `ArrayVec<Level>`. Returns `None` on any malformed pair.
+/// `[price, qty]` string pairs → `ArrayVec<RawLevel>`. Returns `None` on any malformed pair.
 #[inline]
-fn parse_levels(exchange: &'static str, raw: &[[&str; 2]]) -> Option<ArrayVec<Level, MAX_LEVELS>> {
+fn parse_levels(raw: &[[&str; 2]]) -> Option<ArrayVec<RawLevel, MAX_LEVELS>> {
     let mut levels = ArrayVec::new();
     for &[price, amount] in raw {
         let p = FixedPoint::parse(price)?;
@@ -95,14 +95,7 @@ fn parse_levels(exchange: &'static str, raw: &[[&str; 2]]) -> Option<ArrayVec<Le
         if a.raw() == 0 {
             continue;
         }
-        if levels
-            .try_push(Level {
-                exchange,
-                price: p,
-                amount: a,
-            })
-            .is_err()
-        {
+        if levels.try_push(RawLevel { price: p, amount: a }).is_err() {
             break;
         }
     }
@@ -120,8 +113,8 @@ pub fn build_book(
 ) -> Option<OrderBook> {
     Some(OrderBook {
         exchange,
-        bids: parse_levels(exchange, bids)?,
-        asks: parse_levels(exchange, asks)?,
+        bids: parse_levels(bids)?,
+        asks: parse_levels(asks)?,
         decode_start,
     })
 }
@@ -132,16 +125,17 @@ pub fn build_book(
 pub fn try_send_book(
     producer: &mut Producer<OrderBook>,
     book: OrderBook,
-    exchange: &'static str,
+    metrics: &ExchangeMetrics,
 ) -> bool {
     if producer.is_abandoned() {
-        tracing::warn!(exchange, "consumer dropped, stopping");
+        tracing::warn!(exchange = metrics.name, "consumer dropped, stopping");
         return false;
     }
     match producer.push(book) {
         Ok(()) => true,
         Err(rtrb::PushError::Full(_)) => {
-            tracing::warn!(exchange, "ring full, dropping snapshot");
+            metrics.ring_drops.fetch_add(1, Relaxed);
+            tracing::warn!(exchange = metrics.name, "ring full, dropping snapshot");
             true
         }
     }
@@ -154,8 +148,10 @@ pub async fn backoff_sleep(
     exchange: &'static str,
     cancel: &CancellationToken,
 ) -> bool {
-    let jitter = fastrand::u64(0..(*backoff_ms / 2).max(1));
-    let delay = *backoff_ms + jitter;
+    // Equal jitter: randomize between 50% and 100% of backoff. Decorrelates
+    // reconnection storms better than additive jitter (AWS architecture blog).
+    let half = *backoff_ms / 2;
+    let delay = half + fastrand::u64(0..half.max(1));
     tracing::warn!(exchange, delay_ms = delay, "reconnecting");
     tokio::select! {
         _ = cancel.cancelled() => return false,
@@ -173,14 +169,14 @@ pub async fn run_ws_loop<H: WsHandler>(
     mut producer: Producer<OrderBook>,
     metrics: Arc<ExchangeMetrics>,
     cancel: CancellationToken,
-) -> Result<()> {
+) {
     let url = handler.ws_url(&symbol);
     let ws_config = ws_config();
     let mut backoff_ms = INITIAL_BACKOFF_MS;
 
     loop {
         if cancel.is_cancelled() {
-            return Ok(());
+            return;
         }
 
         info!(exchange = H::NAME, %url, "connecting");
@@ -207,11 +203,11 @@ pub async fn run_ws_loop<H: WsHandler>(
                     metrics.connected.store(false, Relaxed);
                     // Fall through to backoff + reconnect.
                     if cancel.is_cancelled() {
-                        return Ok(());
+                        return;
                     }
                     metrics.reconnections.fetch_add(1, Relaxed);
                     if !backoff_sleep(&mut backoff_ms, MAX_BACKOFF_MS, H::NAME, &cancel).await {
-                        return Ok(());
+                        return;
                     }
                     continue;
                 }
@@ -222,7 +218,7 @@ pub async fn run_ws_loop<H: WsHandler>(
                         _ = cancel.cancelled() => {
                             info!(exchange = H::NAME, "shutting down");
                             metrics.connected.store(false, Relaxed);
-                            return Ok(());
+                            return;
                         }
                         msg = read.next() => match msg {
                             Some(Ok(Message::Text(t))) => t,
@@ -242,7 +238,7 @@ pub async fn run_ws_loop<H: WsHandler>(
                     match handler.process_text(&text, &mut producer, &metrics) {
                         HandleResult::Continue => {}
                         HandleResult::Reconnect => break,
-                        HandleResult::Shutdown => return Ok(()),
+                        HandleResult::Shutdown => return,
                     }
                 }
 
@@ -255,12 +251,12 @@ pub async fn run_ws_loop<H: WsHandler>(
         }
 
         if cancel.is_cancelled() {
-            return Ok(());
+            return;
         }
 
         metrics.reconnections.fetch_add(1, Relaxed);
         if !backoff_sleep(&mut backoff_ms, MAX_BACKOFF_MS, H::NAME, &cancel).await {
-            return Ok(());
+            return;
         }
     }
 }
@@ -281,29 +277,25 @@ pub fn spawn_exchange<H: WsHandler>(
                 .enable_all()
                 .build()
                 .unwrap_or_else(|e| panic!("{} runtime: {e}", H::NAME));
-            rt.block_on(async {
-                if let Err(e) = run_ws_loop(handler, symbol, producer, metrics, cancel).await {
-                    tracing::error!(exchange = H::NAME, error = %e, "fatal error");
-                }
-            });
+            rt.block_on(run_ws_loop(handler, symbol, producer, metrics, cancel));
         })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering::Relaxed;
+
     use super::*;
-    use crate::types::FixedPoint;
+    use crate::types::{FixedPoint, RawLevel};
 
     fn test_book(exchange: &'static str) -> OrderBook {
         let mut bids = ArrayVec::new();
-        bids.push(Level {
-            exchange,
+        bids.push(RawLevel {
             price: FixedPoint::from_f64(100.0),
             amount: FixedPoint::from_f64(1.0),
         });
         let mut asks = ArrayVec::new();
-        asks.push(Level {
-            exchange,
+        asks.push(RawLevel {
             price: FixedPoint::from_f64(101.0),
             amount: FixedPoint::from_f64(1.0),
         });
@@ -315,20 +307,27 @@ mod tests {
         }
     }
 
+    fn test_metrics() -> ExchangeMetrics {
+        ExchangeMetrics::new("test")
+    }
+
     #[test]
     fn try_send_ring_full_drops() {
         // 1-slot ring: push one to fill it, then push another -- should drop, not error.
         let (mut producer, _consumer) = rtrb::RingBuffer::new(1);
-        assert!(try_send_book(&mut producer, test_book("a"), "a"));
+        let m = test_metrics();
+        assert!(try_send_book(&mut producer, test_book("a"), &m));
         // Ring is now full -- next push drops the book but returns true.
-        assert!(try_send_book(&mut producer, test_book("a"), "a"));
+        assert!(try_send_book(&mut producer, test_book("a"), &m));
+        assert_eq!(m.ring_drops.load(Relaxed), 1);
     }
 
     #[test]
     fn try_send_abandoned_returns_false() {
         let (mut producer, consumer) = rtrb::RingBuffer::new(4);
+        let m = test_metrics();
         drop(consumer); // Abandon the consumer.
-        assert!(!try_send_book(&mut producer, test_book("a"), "a"));
+        assert!(!try_send_book(&mut producer, test_book("a"), &m));
     }
 
     #[test]
@@ -339,7 +338,7 @@ mod tests {
             ["99.0", "0.00000000"], // cleared level
             ["98.0", "3.0"],
         ];
-        let levels = parse_levels("test", &raw).unwrap();
+        let levels = parse_levels(&raw).unwrap();
         assert_eq!(levels.len(), 2);
         assert_eq!(levels[0].price, FixedPoint::parse("100.0").unwrap());
         assert_eq!(levels[1].price, FixedPoint::parse("98.0").unwrap());

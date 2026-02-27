@@ -14,7 +14,7 @@ use orderbook_aggregator::metrics::Metrics;
 use orderbook_aggregator::server::proto::orderbook_aggregator_client::OrderbookAggregatorClient;
 use orderbook_aggregator::server::proto::orderbook_aggregator_server::OrderbookAggregatorServer;
 use orderbook_aggregator::server::{OrderbookService, proto};
-use orderbook_aggregator::types::{FixedPoint, Level, OrderBook, Summary};
+use orderbook_aggregator::types::{FixedPoint, OrderBook, RawLevel, Summary};
 
 /// End-to-end: mock exchange data → SPSC → merger → gRPC server → gRPC client.
 #[tokio::test]
@@ -83,15 +83,13 @@ async fn grpc_streams_merged_summary() {
     prod_a
         .push(OrderBook {
             exchange: "test_a",
-            bids: [Level {
-                exchange: "test_a",
+            bids: [RawLevel {
                 price: FixedPoint::from_f64(100.0),
                 amount: FixedPoint::from_f64(5.0),
             }]
             .into_iter()
             .collect(),
-            asks: [Level {
-                exchange: "test_a",
+            asks: [RawLevel {
                 price: FixedPoint::from_f64(101.0),
                 amount: FixedPoint::from_f64(3.0),
             }]
@@ -104,15 +102,13 @@ async fn grpc_streams_merged_summary() {
     prod_b
         .push(OrderBook {
             exchange: "test_b",
-            bids: [Level {
-                exchange: "test_b",
+            bids: [RawLevel {
                 price: FixedPoint::from_f64(100.5),
                 amount: FixedPoint::from_f64(2.0),
             }]
             .into_iter()
             .collect(),
-            asks: [Level {
-                exchange: "test_b",
+            asks: [RawLevel {
                 price: FixedPoint::from_f64(100.8),
                 amount: FixedPoint::from_f64(4.0),
             }]

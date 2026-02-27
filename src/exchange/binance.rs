@@ -72,10 +72,8 @@ impl WsHandler for BinanceHandler {
     const NAME: &'static str = "binance";
 
     fn ws_url(&self, symbol: &str) -> String {
-        format!(
-            "wss://stream.binance.com:9443/ws/{}@depth20@100ms",
-            symbol.to_lowercase()
-        )
+        // Symbol is already lowercase from Config validation.
+        format!("wss://stream.binance.com:9443/ws/{symbol}@depth20@100ms")
     }
 
     fn process_text(
@@ -115,7 +113,7 @@ impl WsHandler for BinanceHandler {
         };
         metrics.decode_latency.record(t0.elapsed());
         metrics.messages.fetch_add(1, Relaxed);
-        if !super::try_send_book(producer, book, "binance") {
+        if !super::try_send_book(producer, book, metrics) {
             return HandleResult::Shutdown;
         }
         HandleResult::Continue
@@ -170,8 +168,7 @@ mod tests {
         );
         assert_eq!(book.asks[2].price, FixedPoint::parse("0.06827000").unwrap());
 
-        assert!(book.bids.iter().all(|l| l.exchange == "binance"));
-        assert!(book.asks.iter().all(|l| l.exchange == "binance"));
+        assert_eq!(book.exchange, "binance");
     }
 
     #[test]

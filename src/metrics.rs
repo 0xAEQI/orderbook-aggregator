@@ -141,17 +141,19 @@ pub struct ExchangeMetrics {
     pub messages: AtomicU64,
     pub errors: AtomicU64,
     pub reconnections: AtomicU64,
+    pub ring_drops: AtomicU64,
     pub connected: AtomicBool,
     pub decode_latency: PromHistogram,
 }
 
 impl ExchangeMetrics {
-    fn new(name: &'static str) -> Self {
+    pub(crate) fn new(name: &'static str) -> Self {
         Self {
             name,
             messages: AtomicU64::new(0),
             errors: AtomicU64::new(0),
             reconnections: AtomicU64::new(0),
+            ring_drops: AtomicU64::new(0),
             connected: AtomicBool::new(false),
             decode_latency: PromHistogram::new(),
         }
@@ -258,6 +260,14 @@ impl Metrics {
             "counter",
             &self.exchanges,
             |ex| ex.reconnections.load(Relaxed),
+        );
+        write_per_exchange(
+            &mut out,
+            "orderbook_ring_drops_total",
+            "Snapshots dropped due to full SPSC ring buffer",
+            "counter",
+            &self.exchanges,
+            |ex| ex.ring_drops.load(Relaxed),
         );
 
         // Global counter.

@@ -121,7 +121,16 @@ impl fmt::Display for FixedPoint {
     }
 }
 
-/// A single price level from an exchange. `Copy` -- no heap, no clone overhead.
+/// A price/amount pair without exchange attribution. Used inside [`OrderBook`]
+/// where all levels come from the same exchange (16 bytes, `Copy`).
+#[derive(Debug, Clone, Copy)]
+pub struct RawLevel {
+    pub price: FixedPoint,
+    pub amount: FixedPoint,
+}
+
+/// A price level with exchange attribution. Used in merged [`Summary`] output
+/// where levels from different exchanges are interleaved (32 bytes, `Copy`).
 #[derive(Debug, Clone, Copy)]
 pub struct Level {
     pub exchange: &'static str,
@@ -135,8 +144,8 @@ pub struct Level {
 #[derive(Debug, Clone)]
 pub struct OrderBook {
     pub exchange: &'static str,
-    pub bids: ArrayVec<Level, MAX_LEVELS>,
-    pub asks: ArrayVec<Level, MAX_LEVELS>,
+    pub bids: ArrayVec<RawLevel, MAX_LEVELS>,
+    pub asks: ArrayVec<RawLevel, MAX_LEVELS>,
     /// When decode started (immediately after WS frame dispatch) -- e2e latency anchor.
     pub decode_start: Instant,
 }
@@ -144,8 +153,10 @@ pub struct OrderBook {
 /// Merged top-of-book across all exchanges. Published via `watch` channel.
 #[derive(Debug, Clone, Default)]
 pub struct Summary {
-    /// `best_ask - best_bid`. Zero if either side is empty.
-    pub spread: f64,
+    /// `best_ask - best_bid` in raw [`FixedPoint`] units (10⁻⁸ scale).
+    /// Negative for crossed books. Zero if either side is empty.
+    /// Convert to `f64` only at the proto boundary.
+    pub spread_raw: i64,
     pub bids: ArrayVec<Level, TOP_N>,
     pub asks: ArrayVec<Level, TOP_N>,
 }

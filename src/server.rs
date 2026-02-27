@@ -57,7 +57,7 @@ fn to_proto(summary: Summary) -> proto::Summary {
         amount: l.amount.to_f64(),
     };
     proto::Summary {
-        spread: summary.spread,
+        spread: summary.spread_raw as f64 / crate::types::FixedPoint::SCALE as f64,
         bids: summary.bids.into_iter().map(cvt).collect(),
         asks: summary.asks.into_iter().map(cvt).collect(),
     }

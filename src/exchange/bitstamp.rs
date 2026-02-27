@@ -29,6 +29,7 @@ struct BitstampPatterns {
     bids: memmem::Finder<'static>,
     asks: memmem::Finder<'static>,
     event: memmem::Finder<'static>,
+    microtimestamp: memmem::Finder<'static>,
 }
 
 fn patterns() -> &'static BitstampPatterns {
@@ -37,6 +38,7 @@ fn patterns() -> &'static BitstampPatterns {
         bids: memmem::Finder::new(b"\"bids\":"),
         asks: memmem::Finder::new(b"\"asks\":"),
         event: memmem::Finder::new(b"\"event\":"),
+        microtimestamp: memmem::Finder::new(b"\"microtimestamp\":"),
     })
 }
 
@@ -46,16 +48,29 @@ fn patterns() -> &'static BitstampPatterns {
 /// Seeks bids → asks (forward in "data" object), then event.
 /// For non-data events (`subscription_succeeded`), bids/asks aren't found
 /// and return empty arrays, then event is found forward.
-fn walk(json: &str) -> Option<(&str, Levels<'_>, Levels<'_>)> {
+///
+/// Returns `(event, microtimestamp, bids, asks)`. Microtimestamp is 0 for
+/// non-data events (no data payload).
+fn walk(json: &str) -> Option<(&str, u64, Levels<'_>, Levels<'_>)> {
     let p = patterns();
     let mut s = Scanner::new(json);
+    // microtimestamp appears before bids in the data object.
+    let micro = if s.seek(&p.microtimestamp).is_some() {
+        // Value is a quoted string: "1700000000000000"
+        s.read_string()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0)
+    } else {
+        s.pos = 0;
+        0
+    };
     let bids = s.read_optional_levels(&p.bids)?;
     let asks = s.read_optional_levels(&p.asks)?;
     // Event may precede data in some formats; SIMD re-seek is ~15ns.
     s.pos = 0;
     s.seek(&p.event)?;
     let event = s.read_string()?;
-    Some((event, bids, asks))
+    Some((event, micro, bids, asks))
 }
 
 // ── WebSocket adapter ────────────────────────────────────────────────────────
@@ -63,7 +78,17 @@ fn walk(json: &str) -> Option<(&str, Levels<'_>, Levels<'_>)> {
 const BITSTAMP_WS_URL: &str = "wss://ws.bitstamp.net";
 
 /// Bitstamp `order_book` channel adapter (full snapshots, top 100 levels).
-pub struct BitstampHandler;
+#[derive(Default)]
+pub struct BitstampHandler {
+    last_micro: u64,
+}
+
+impl BitstampHandler {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
 
 impl WsHandler for BitstampHandler {
     const NAME: &'static str = "bitstamp";
@@ -73,9 +98,9 @@ impl WsHandler for BitstampHandler {
     }
 
     fn subscribe_message(&self, symbol: &str) -> Option<String> {
-        let channel = format!("order_book_{}", symbol.to_lowercase());
+        // Symbol is already lowercase from Config validation.
         Some(format!(
-            r#"{{"event":"bts:subscribe","data":{{"channel":"{channel}"}}}}"#
+            r#"{{"event":"bts:subscribe","data":{{"channel":"order_book_{symbol}"}}}}"#
         ))
     }
 
@@ -86,7 +111,7 @@ impl WsHandler for BitstampHandler {
         metrics: &ExchangeMetrics,
     ) -> HandleResult {
         let t0 = Instant::now();
-        let Some((event, bids, asks)) = walk(text) else {
+        let Some((event, micro, bids, asks)) = walk(text) else {
             metrics.errors.fetch_add(1, Relaxed);
             warn!(
                 exchange = "bitstamp",
@@ -97,6 +122,19 @@ impl WsHandler for BitstampHandler {
         };
         match event {
             "data" => {
+                // Stale/duplicate detection: microtimestamp should increase monotonically.
+                if micro > 0 && self.last_micro > 0 && micro <= self.last_micro {
+                    warn!(
+                        exchange = "bitstamp",
+                        micro,
+                        last_micro = self.last_micro,
+                        "out-of-order update (stale or duplicate)"
+                    );
+                    metrics.errors.fetch_add(1, Relaxed);
+                    return HandleResult::Continue;
+                }
+                self.last_micro = micro;
+
                 let Some(book) = super::build_book("bitstamp", &bids, &asks, t0) else {
                     metrics.errors.fetch_add(1, Relaxed);
                     warn!(exchange = "bitstamp", "malformed level");
@@ -104,7 +142,7 @@ impl WsHandler for BitstampHandler {
                 };
                 metrics.decode_latency.record(t0.elapsed());
                 metrics.messages.fetch_add(1, Relaxed);
-                if !super::try_send_book(producer, book, "bitstamp") {
+                if !super::try_send_book(producer, book, metrics) {
                     return HandleResult::Shutdown;
                 }
             }
@@ -126,7 +164,7 @@ impl WsHandler for BitstampHandler {
 /// Decode a Bitstamp `order_book` JSON message. Returns `None` for non-data events.
 #[must_use]
 pub fn parse_order_book_json(json: &str) -> Option<OrderBook> {
-    let (event, bids, asks) = walk(json)?;
+    let (event, _micro, bids, asks) = walk(json)?;
     if event != "data" {
         return None;
     }
@@ -156,7 +194,7 @@ mod tests {
             FixedPoint::parse("12.50000000").unwrap()
         );
         assert_eq!(book.asks[0].price, FixedPoint::parse("0.06825000").unwrap());
-        assert!(book.bids.iter().all(|l| l.exchange == "bitstamp"));
+        assert_eq!(book.exchange, "bitstamp");
     }
 
     #[test]
@@ -207,8 +245,9 @@ mod tests {
                 "asks": [["0.06825","10.0"],["0.06826","7.2"],["0.06827","3.5"]]
             }
         }"#;
-        let (event, bids, asks) = walk(json).expect("valid JSON");
+        let (event, micro, bids, asks) = walk(json).expect("valid JSON");
         assert_eq!(event, "data");
+        assert_eq!(micro, 1_700_000_000_000_000);
         assert_eq!(bids.len(), 3);
         assert_eq!(asks.len(), 3);
         assert_eq!(bids[0], ["0.06824", "12.5"]);
@@ -222,8 +261,9 @@ mod tests {
             "channel": "order_book_ethbtc",
             "data": {}
         }"#;
-        let (event, bids, asks) = walk(json).expect("valid JSON");
+        let (event, micro, bids, asks) = walk(json).expect("valid JSON");
         assert_eq!(event, "bts:subscription_succeeded");
+        assert_eq!(micro, 0); // No microtimestamp in non-data events.
         assert!(bids.is_empty());
         assert!(asks.is_empty());
     }
@@ -235,7 +275,7 @@ mod tests {
             .collect();
         let json_array = levels.join(",");
         let json = format!(r#"{{"event":"data","data":{{"bids":[{json_array}],"asks":[]}}}}"#);
-        let (event, bids, asks) = walk(&json).expect("valid JSON");
+        let (event, _micro, bids, asks) = walk(&json).expect("valid JSON");
         assert_eq!(event, "data");
         assert_eq!(bids.len(), MAX_LEVELS);
         assert!(asks.is_empty());
@@ -246,7 +286,7 @@ mod tests {
     #[test]
     fn walk_extra_fields() {
         let json = r#"{"event":"data","channel":"order_book_ethbtc","data":{"timestamp":"1700000000","microtimestamp":"1700000000000000","bids":[["3.0","4.0"]],"asks":[["5.0","6.0"]]}}"#;
-        let (event, bids, asks) = walk(json).expect("should skip extra data fields");
+        let (event, _micro, bids, asks) = walk(json).expect("should skip extra data fields");
         assert_eq!(event, "data");
         assert_eq!(bids[0], ["3.0", "4.0"]);
         assert_eq!(asks[0], ["5.0", "6.0"]);
@@ -256,8 +296,9 @@ mod tests {
     fn walk_real_field_order() {
         // Bitstamp's real API sends "data" BEFORE "event" in the JSON object.
         let json = r#"{"data":{"timestamp":"1772110554","microtimestamp":"1772110554110141","bids":[["0.03035870","1.35795438"],["0.03035566","0.08250000"]],"asks":[["0.03036200","10.00000000"],["0.03036500","5.00000000"]]},"channel":"order_book_ethbtc","event":"data"}"#;
-        let (event, bids, asks) = walk(json).expect("should handle data-before-event order");
+        let (event, micro, bids, asks) = walk(json).expect("should handle data-before-event order");
         assert_eq!(event, "data");
+        assert_eq!(micro, 1_772_110_554_110_141);
         assert_eq!(bids.len(), 2);
         assert_eq!(asks.len(), 2);
         assert_eq!(bids[0], ["0.03035870", "1.35795438"]);
