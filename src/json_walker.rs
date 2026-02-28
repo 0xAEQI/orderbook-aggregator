@@ -93,7 +93,8 @@ impl<'a> Scanner<'a> {
         None
     }
 
-    /// Read an unsigned integer value (JSON number). Returns 0 if not found.
+    /// Read an unsigned integer value (JSON number). Returns 0 if not found
+    /// or on overflow.
     #[inline]
     pub(crate) fn read_u64(&mut self) -> u64 {
         self.skip_ws();
@@ -103,7 +104,13 @@ impl<'a> Scanner<'a> {
             if d > 9 {
                 break;
             }
-            val = val.wrapping_mul(10).wrapping_add(u64::from(d));
+            val = match val
+                .checked_mul(10)
+                .and_then(|v| v.checked_add(u64::from(d)))
+            {
+                Some(v) => v,
+                None => return 0, // overflow → treat as missing
+            };
             self.pos += 1;
         }
         val

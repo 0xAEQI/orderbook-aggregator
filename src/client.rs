@@ -148,13 +148,13 @@ fn render(frame: &mut Frame, app: &App) {
     let best_bid = summary.bids.first().map_or(0.0, |l| l.price);
     let best_ask = summary.asks.first().map_or(0.0, |l| l.price);
     let mid = f64::midpoint(best_bid, best_ask);
-    let spread_abs = summary.spread;
+    let spread = summary.spread;
     let spread_pct = if mid > 0.0 {
-        (spread_abs / mid) * 100.0
+        (spread / mid) * 100.0
     } else {
         0.0
     };
-    let spread_text = format!(" Spread: {spread_abs:.8} ({spread_pct:.3}%) ");
+    let spread_text = format!(" Spread: {spread:.8} ({spread_pct:.3}%) ");
     let pad_total = 70_usize.saturating_sub(spread_text.len());
     let pad = "─".repeat(pad_total / 2);
     let spread_line = Line::from(Span::styled(
