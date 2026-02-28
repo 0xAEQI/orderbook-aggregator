@@ -3,14 +3,14 @@
 ## Running
 
 ```bash
-cargo test     # 71 tests
+cargo test     # 75 tests
 cargo clippy   # 0 warnings, unsafe_code = "deny" (expect-gated for core pinning)
 cargo bench    # Criterion benchmarks (see BENCHMARKS.md)
 ```
 
 ## Coverage
 
-71 tests covering:
+75 tests covering:
 
 **Integration** -- end-to-end gRPC stream: mock exchange data through SPSC merger to gRPC client, updated book prices reflected in stream, single-exchange degraded mode delivery.
 
@@ -32,7 +32,7 @@ cargo bench    # Criterion benchmarks (see BENCHMARKS.md)
 
 **JSON walker (Scanner)** -- `read_string` basic + escaped, `read_u64` parse + overflow, `seek` advances past needle, `extract_string` cold-path key extraction.
 
-**JSON walker (exchange)** -- Binance/Bitstamp happy path, unknown field tolerance, empty levels, non-data events, level capping at 20, malformed JSON rejection.
+**JSON walker (exchange)** -- Binance/Bitstamp happy path, unknown field tolerance, empty levels, non-data events, level capping at DEPTH, malformed JSON rejection.
 
 **Exchange parsers** -- realistic payloads, unknown field tolerance, level capping.
 

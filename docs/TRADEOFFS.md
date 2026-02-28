@@ -52,9 +52,9 @@ The `rust_decimal` crate would give arbitrary precision but requires 128-bit ope
 3. Allocate `String` and `Vec` for deserialized output
 4. Drain unused fields (Bitstamp sends 100 levels, we keep 20)
 
-The custom walker skips all of this. It uses `memmem::Finder` objects (precompiled SIMD patterns) to jump directly to `"bids":` and `"asks":` -- bypassing envelope fields entirely. Price/quantity strings are borrowed as `&str` slices (zero-copy). The walker keeps the first 20 levels and stops -- no drain loop for the remaining 80.
+The custom walker skips all of this. It uses `memmem::Finder` objects (precompiled SIMD patterns) to jump directly to `"bids":` and `"asks":` -- bypassing envelope fields entirely. `read_quoted_decimal()` fuses quote handling and decimal parsing into a single forward pass -- no intermediate `&str`, no double-scan. The walker keeps the first 10 levels and stops -- no drain loop for the remaining 90.
 
-**Result**: ~1.94μs decode vs ~3-4μs with simd-json+serde for equivalent payloads.
+**Result**: ~660ns decode vs ~3-4μs with simd-json+serde for equivalent payloads.
 
 **Tradeoff**: Each exchange has its own ~15-line `walk()` function matching its specific wire format, co-located with its WebSocket adapter. Adding a new exchange means writing a new walker in the adapter module -- a series of `seek() + read_*()` calls using shared `Scanner` utilities from `json_walker.rs`. The pattern is well-established and self-contained.
 
@@ -138,9 +138,9 @@ I/O is not the bottleneck. The syscall overhead math:
 - Binance sends ~10 messages/second, Bitstamp ~10 → **~20 `read()` syscalls/second** total.
 - Each `read()` syscall costs ~200-500ns in user→kernel→user mode switching on modern Linux.
 - Total syscall overhead: **~20 × ~300ns ≈ 6μs/second**.
-- Per-message syscall tax: **~300ns** vs 1.94μs decode time (~15% of decode).
+- Per-message syscall tax: **~300ns** vs 660ns decode time (~45% of decode).
 
-`io_uring` with `SQPOLL` would eliminate the per-syscall mode switch by having a kernel thread poll the submission ring. This saves ~300ns per message -- meaningful in isolation, but the architectural cost is prohibitive:
+`io_uring` with `SQPOLL` would eliminate the per-syscall mode switch by having a kernel thread poll the submission ring. This saves ~300ns per message -- more significant now that the fused walker has reduced decode time to ~660ns, but the architectural cost is still prohibitive:
 
 **1. `tokio-tungstenite` is incompatible.** It uses mio's readiness-based model (epoll): the application owns buffers, gets notified when the fd is ready, then issues `read()`. `io_uring` uses a completion-based model: the kernel owns the buffer until the operation completes. These are fundamentally different memory ownership models. Switching requires abandoning `tokio-tungstenite` and writing a custom WebSocket implementation on raw `io_uring`.
 
@@ -159,4 +159,4 @@ The workload profile is the opposite of where `io_uring` excels:
 
 **Where `io_uring` would help**: High-connection-count servers (1000s of fds), file I/O intensive workloads (database engines, logging), network proxies/load balancers at 10K+ connections, or kernel bypass when DPDK/SPDK are too heavyweight.
 
-**Tradeoff**: Keeping epoll costs ~300ns per message in syscall overhead. Eliminating it requires rewriting the WebSocket transport layer on an immature ecosystem for a ~15% improvement on a stage that accounts for less than half the pipeline latency.
+**Tradeoff**: Keeping epoll costs ~300ns per message in syscall overhead. Eliminating it requires rewriting the WebSocket transport layer on an immature ecosystem for a ~45% improvement on the decode stage alone -- significant, but the architectural cost is not justified for 2 fds at 20 ops/second.
