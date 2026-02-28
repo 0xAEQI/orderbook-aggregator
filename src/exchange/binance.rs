@@ -8,13 +8,15 @@ use std::sync::OnceLock;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
 
+use arrayvec::ArrayVec;
 use memchr::memmem;
 use rtrb::Producer;
 use tracing::warn;
 
-use crate::json_walker::{Levels, Scanner, read_levels};
+use crate::BINANCE_ID;
+use crate::json_walker::{Scanner, read_raw_levels};
 use crate::metrics::ExchangeMetrics;
-use crate::types::OrderBook;
+use crate::types::{DEPTH, OrderBook, RawLevel};
 
 use super::{HandleResult, WsHandler};
 
@@ -36,8 +38,9 @@ fn patterns() -> &'static BinancePatterns {
 }
 
 /// Single forward pass: lastUpdateId → bids → asks.
-/// Matches Binance depth20 wire format exactly.
-fn walk(json: &str) -> Option<(u64, Levels<'_>, Levels<'_>)> {
+/// Fused walker: parses quoted decimals directly into `FixedPoint`, filters
+/// zero-amount levels inline. No intermediate `&str` or `Levels` allocation.
+fn walk(json: &str) -> Option<(u64, ArrayVec<RawLevel, DEPTH>, ArrayVec<RawLevel, DEPTH>)> {
     let p = patterns();
     let mut s = Scanner::new(json);
     let seq = if s.seek(&p.last_update_id).is_some() {
@@ -47,9 +50,9 @@ fn walk(json: &str) -> Option<(u64, Levels<'_>, Levels<'_>)> {
         0
     };
     s.seek(&p.bids)?;
-    let bids = read_levels(&mut s)?;
+    let bids = read_raw_levels(&mut s)?;
     s.seek(&p.asks)?;
-    let asks = read_levels(&mut s)?;
+    let asks = read_raw_levels(&mut s)?;
     Some((seq, bids, asks))
 }
 
@@ -110,10 +113,11 @@ impl WsHandler for BinanceHandler {
         }
         self.last_seq = seq;
 
-        let Some(book) = super::build_book(Self::NAME, &bids, &asks, t0) else {
-            metrics.errors.fetch_add(1, Relaxed);
-            warn!(exchange = Self::NAME, "malformed level");
-            return HandleResult::Continue;
+        let book = OrderBook {
+            exchange_id: BINANCE_ID,
+            bids,
+            asks,
+            decode_start: t0,
         };
         metrics.decode_latency.record(t0.elapsed());
         metrics.messages.fetch_add(1, Relaxed);
@@ -128,7 +132,12 @@ impl WsHandler for BinanceHandler {
 #[must_use]
 pub fn parse_depth_json(json: &str) -> Option<OrderBook> {
     let (_seq, bids, asks) = walk(json)?;
-    super::build_book("binance", &bids, &asks, Instant::now())
+    Some(OrderBook {
+        exchange_id: BINANCE_ID,
+        bids,
+        asks,
+        decode_start: Instant::now(),
+    })
 }
 
 #[cfg(test)]
@@ -141,7 +150,7 @@ mod tests {
     fn parse_binance_snapshot() {
         let book = parse_depth_json(BINANCE_JSON_3L).expect("valid JSON");
 
-        assert_eq!(book.exchange, "binance");
+        assert_eq!(book.exchange_id, BINANCE_ID);
         assert_eq!(book.bids.len(), 3);
         assert_eq!(book.asks.len(), 3);
 
@@ -162,12 +171,8 @@ mod tests {
 
     #[test]
     fn parse_binance_ignores_unknown_fields() {
-        let json = r#"{
-            "lastUpdateId": 999,
-            "E": 1234567890,
-            "bids": [["1.0", "2.0"]],
-            "asks": [["3.0", "4.0"]]
-        }"#;
+        let json =
+            r#"{"lastUpdateId":999,"E":1234567890,"bids":[["1.0","2.0"]],"asks":[["3.0","4.0"]]}"#;
         let book = parse_depth_json(json).expect("should ignore unknown fields");
         assert_eq!(book.bids.len(), 1);
         assert_eq!(book.asks.len(), 1);
@@ -182,10 +187,11 @@ mod tests {
         assert_eq!(seq, 123);
         assert_eq!(bids.len(), 3);
         assert_eq!(asks.len(), 3);
-        assert_eq!(bids[0], ["0.06824", "12.5"]);
-        assert_eq!(bids[2], ["0.06822", "5.0"]);
-        assert_eq!(asks[0], ["0.06825", "10.0"]);
-        assert_eq!(asks[2], ["0.06827", "3.5"]);
+        assert_eq!(bids[0].price, FixedPoint::parse("0.06824").unwrap());
+        assert_eq!(bids[0].amount, FixedPoint::parse("12.5").unwrap());
+        assert_eq!(bids[2].price, FixedPoint::parse("0.06822").unwrap());
+        assert_eq!(asks[0].price, FixedPoint::parse("0.06825").unwrap());
+        assert_eq!(asks[2].price, FixedPoint::parse("0.06827").unwrap());
     }
 
     #[test]
@@ -195,8 +201,8 @@ mod tests {
         assert_eq!(seq, 999);
         assert_eq!(bids.len(), 1);
         assert_eq!(asks.len(), 1);
-        assert_eq!(bids[0], ["1.0", "2.0"]);
-        assert_eq!(asks[0], ["3.0", "4.0"]);
+        assert_eq!(bids[0].price, FixedPoint::parse("1.0").unwrap());
+        assert_eq!(asks[0].price, FixedPoint::parse("3.0").unwrap());
     }
 
     #[test]

@@ -11,17 +11,17 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use orderbook_aggregator::exchange::binance::parse_depth_json;
 use orderbook_aggregator::exchange::bitstamp::parse_order_book_json;
 use orderbook_aggregator::merger::{BookStore, merge};
-use orderbook_aggregator::types::{FixedPoint, OrderBook, RawLevel};
+use orderbook_aggregator::types::{ExchangeId, FixedPoint, OrderBook, RawLevel};
 
 // ── JSON payloads ────────────────────────────────────────────────────────────
 
 /// Generate a realistic Binance depth20 JSON payload with `n` levels per side.
 fn binance_json(n: usize) -> String {
     let bids: Vec<String> = (0..n)
-        .map(|i| format!("[\"0.{:08}\", \"{}.00000000\"]", 6824 - i, 12 - (i % 10)))
+        .map(|i| format!("[\"0.{:08}\",\"{}.00000000\"]", 6824 - i, 12 - (i % 10)))
         .collect();
     let asks: Vec<String> = (0..n)
-        .map(|i| format!("[\"0.{:08}\", \"{}.00000000\"]", 6825 + i, 10 - (i % 8)))
+        .map(|i| format!("[\"0.{:08}\",\"{}.00000000\"]", 6825 + i, 10 - (i % 8)))
         .collect();
     format!(
         r#"{{"lastUpdateId":123456789,"bids":[{}],"asks":[{}]}}"#,
@@ -33,10 +33,10 @@ fn binance_json(n: usize) -> String {
 /// Generate a realistic Bitstamp `order_book` JSON message with `n` levels per side.
 fn bitstamp_json(n: usize) -> String {
     let bids: Vec<String> = (0..n)
-        .map(|i| format!("[\"0.{:08}\", \"{}.00000000\"]", 6824 - i, 12 - (i % 10)))
+        .map(|i| format!("[\"0.{:08}\",\"{}.00000000\"]", 6824 - i, 12 - (i % 10)))
         .collect();
     let asks: Vec<String> = (0..n)
-        .map(|i| format!("[\"0.{:08}\", \"{}.00000000\"]", 6825 + i, 10 - (i % 8)))
+        .map(|i| format!("[\"0.{:08}\",\"{}.00000000\"]", 6825 + i, 10 - (i % 8)))
         .collect();
     format!(
         r#"{{"data":{{"timestamp":"1700000000","microtimestamp":"1700000000000000","bids":[{bids}],"asks":[{asks}]}},"channel":"order_book_ethbtc","event":"data"}}"#,
@@ -46,9 +46,9 @@ fn bitstamp_json(n: usize) -> String {
 }
 
 /// Build a pre-parsed `OrderBook` with `n` levels per side for merge benchmarks.
-fn make_book(exchange: &'static str, base_bid: f64, base_ask: f64, n: usize) -> OrderBook {
+fn make_book(exchange_id: ExchangeId, base_bid: f64, base_ask: f64, n: usize) -> OrderBook {
     OrderBook {
-        exchange,
+        exchange_id,
         bids: (0..n)
             .map(|i| RawLevel {
                 price: FixedPoint::from_f64(base_bid - i as f64 * 0.001),
@@ -98,8 +98,8 @@ fn bench_fixed_parse(c: &mut Criterion) {
 }
 
 fn bench_merge(c: &mut Criterion) {
-    let book_a = make_book("binance", 0.06824, 0.06825, 20);
-    let book_b = make_book("bitstamp", 0.06823, 0.06826, 20);
+    let book_a = make_book(0, 0.06824, 0.06825, 20);
+    let book_b = make_book(1, 0.06823, 0.06826, 20);
 
     c.bench_function("merge_2x20", |b| {
         b.iter_batched(

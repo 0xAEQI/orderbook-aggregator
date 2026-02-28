@@ -4,22 +4,23 @@
 //! channel for the configured pair. Bitstamp sends full order book snapshots
 //! on each update (top 100 levels).
 //!
-//! Uses a custom byte walker for zero-copy JSON parsing -- scans directly to
-//! `event` and `data.bids`/`data.asks`, borrowing `&str` slices from the WS
-//! frame buffer. Keeps first 20 of 100 levels and skips the rest in a tight
-//! loop -- no serde, no simd-json, no `IgnoredAny` overhead.
+//! Uses a fused byte walker for zero-copy JSON parsing -- scans directly to
+//! `event` and `data.bids`/`data.asks`, parsing quoted decimals into `FixedPoint`
+//! in a single forward pass. No serde, no simd-json, no `IgnoredAny` overhead.
 
 use std::sync::OnceLock;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
 
+use arrayvec::ArrayVec;
 use memchr::memmem;
 use rtrb::Producer;
 use tracing::{error, info, warn};
 
-use crate::json_walker::{Levels, Scanner, extract_string};
+use crate::BITSTAMP_ID;
+use crate::json_walker::{Scanner, extract_string};
 use crate::metrics::ExchangeMetrics;
-use crate::types::OrderBook;
+use crate::types::{DEPTH, OrderBook, RawLevel};
 
 use super::{HandleResult, WsHandler};
 
@@ -45,17 +46,27 @@ fn patterns() -> &'static BitstampPatterns {
 /// Single forward pass matching Bitstamp's real wire format:
 /// `{"data":{"bids":[...],"asks":[...]},...,"event":"data"}`
 ///
-/// Seeks bids → asks (forward in "data" object), then event.
-/// For non-data events (`subscription_succeeded`), bids/asks aren't found
-/// and return empty arrays, then event is found forward.
+/// Fused walker: parses quoted decimals directly into `FixedPoint`, filters
+/// zero-amount levels inline. Returns `(event, microtimestamp, bids, asks)`.
 ///
-/// Returns `(event, microtimestamp, bids, asks)`. Microtimestamp is 0 for
-/// non-data events (no data payload).
-fn walk(json: &str) -> Option<(&str, u64, Levels<'_>, Levels<'_>)> {
+/// Data messages always contain `"microtimestamp":` -- its presence is used to
+/// detect data events without rescanning for `"event":` at the end of the JSON.
+/// Only non-data events (`subscription_succeeded`, error) trigger the rescan.
+fn walk(
+    json: &str,
+) -> Option<(
+    &str,
+    u64,
+    ArrayVec<RawLevel, DEPTH>,
+    ArrayVec<RawLevel, DEPTH>,
+)> {
     let p = patterns();
     let mut s = Scanner::new(json);
-    // microtimestamp appears before bids in the data object.
-    let micro = if s.seek(&p.microtimestamp).is_some() {
+    // microtimestamp appears before bids in the data object. Its presence
+    // reliably identifies data events -- non-data events have an empty data
+    // object with no microtimestamp.
+    let has_data = s.seek(&p.microtimestamp).is_some();
+    let micro = if has_data {
         // Value is a quoted string: "1700000000000000"
         s.read_string()
             .and_then(|s| s.parse::<u64>().ok())
@@ -64,13 +75,20 @@ fn walk(json: &str) -> Option<(&str, u64, Levels<'_>, Levels<'_>)> {
         s.pos = 0;
         0
     };
-    let bids = s.read_optional_levels(&p.bids)?;
-    let asks = s.read_optional_levels(&p.asks)?;
-    // Event may precede data in some formats; SIMD re-seek is ~15ns.
-    s.pos = 0;
-    s.seek(&p.event)?;
-    let event = s.read_string()?;
-    Some((event, micro, bids, asks))
+    let bids = s.read_optional_raw_levels(&p.bids)?;
+    let asks = s.read_optional_raw_levels(&p.asks)?;
+
+    if has_data {
+        // Data message -- skip the rescan for "event":. Saves ~200-500ns
+        // (avoids rescanning the full 2-4KB message from position 0).
+        Some(("data", micro, bids, asks))
+    } else {
+        // Non-data event (subscription_succeeded, error) -- rescan for event type.
+        s.pos = 0;
+        s.seek(&p.event)?;
+        let event = s.read_string()?;
+        Some((event, micro, bids, asks))
+    }
 }
 
 // ── WebSocket adapter ────────────────────────────────────────────────────────
@@ -139,10 +157,11 @@ impl WsHandler for BitstampHandler {
                 }
                 self.last_micro = micro;
 
-                let Some(book) = super::build_book(Self::NAME, &bids, &asks, t0) else {
-                    metrics.errors.fetch_add(1, Relaxed);
-                    warn!(exchange = Self::NAME, "malformed level");
-                    return HandleResult::Continue;
+                let book = OrderBook {
+                    exchange_id: BITSTAMP_ID,
+                    bids,
+                    asks,
+                    decode_start: t0,
                 };
                 metrics.decode_latency.record(t0.elapsed());
                 metrics.messages.fetch_add(1, Relaxed);
@@ -172,20 +191,25 @@ pub fn parse_order_book_json(json: &str) -> Option<OrderBook> {
     if event != "data" {
         return None;
     }
-    super::build_book("bitstamp", &bids, &asks, Instant::now())
+    Some(OrderBook {
+        exchange_id: BITSTAMP_ID,
+        bids,
+        asks,
+        decode_start: Instant::now(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testutil::BITSTAMP_JSON_3L;
-    use crate::types::{FixedPoint, MAX_LEVELS};
+    use crate::types::{DEPTH, FixedPoint};
 
     #[test]
     fn parse_bitstamp_data_message() {
         let book = parse_order_book_json(BITSTAMP_JSON_3L).expect("valid data message");
 
-        assert_eq!(book.exchange, "bitstamp");
+        assert_eq!(book.exchange_id, BITSTAMP_ID);
         assert_eq!(book.bids.len(), 3);
         assert_eq!(book.asks.len(), 3);
 
@@ -210,24 +234,24 @@ mod tests {
 
     #[test]
     fn level_capping_at_max() {
-        // Build a JSON array with 50 levels -- more than MAX_LEVELS (20).
+        // Build a JSON array with 50 levels -- more than DEPTH.
         let levels: Vec<String> = (0..50)
-            .map(|i| format!("[\"{}.0\", \"1.0\"]", 100 + i))
+            .map(|i| format!("[\"{}.0\",\"1.0\"]", 100 + i))
             .collect();
         let json_array = format!("[{}]", levels.join(","));
 
         let json = format!(r#"{{"event":"data","data":{{"bids":{json_array},"asks":[]}}}}"#,);
         let book = parse_order_book_json(&json).expect("valid JSON");
 
-        // Should cap at MAX_LEVELS, not error.
-        assert_eq!(book.bids.len(), MAX_LEVELS);
+        // Should cap at DEPTH, not error.
+        assert_eq!(book.bids.len(), DEPTH);
         assert!(book.asks.is_empty());
 
         // Verify the first and last captured levels are correct.
         assert_eq!(book.bids[0].price, FixedPoint::parse("100.0").unwrap());
         assert_eq!(
-            book.bids[MAX_LEVELS - 1].price,
-            FixedPoint::parse("119.0").unwrap()
+            book.bids[DEPTH - 1].price,
+            FixedPoint::parse(&format!("{}.0", 100 + DEPTH - 1)).unwrap()
         );
     }
 
@@ -235,23 +259,16 @@ mod tests {
 
     #[test]
     fn walk_data_event() {
-        let json = r#"{
-            "event": "data",
-            "channel": "order_book_ethbtc",
-            "data": {
-                "timestamp": "1700000000",
-                "microtimestamp": "1700000000000000",
-                "bids": [["0.06824","12.5"],["0.06823","8.3"],["0.06822","5.0"]],
-                "asks": [["0.06825","10.0"],["0.06826","7.2"],["0.06827","3.5"]]
-            }
-        }"#;
+        // Compact JSON — matches production wire format (no whitespace in arrays).
+        let json = r#"{"event":"data","channel":"order_book_ethbtc","data":{"timestamp":"1700000000","microtimestamp":"1700000000000000","bids":[["0.06824","12.5"],["0.06823","8.3"],["0.06822","5.0"]],"asks":[["0.06825","10.0"],["0.06826","7.2"],["0.06827","3.5"]]}}"#;
         let (event, micro, bids, asks) = walk(json).expect("valid JSON");
         assert_eq!(event, "data");
         assert_eq!(micro, 1_700_000_000_000_000);
         assert_eq!(bids.len(), 3);
         assert_eq!(asks.len(), 3);
-        assert_eq!(bids[0], ["0.06824", "12.5"]);
-        assert_eq!(asks[0], ["0.06825", "10.0"]);
+        assert_eq!(bids[0].price, FixedPoint::parse("0.06824").unwrap());
+        assert_eq!(bids[0].amount, FixedPoint::parse("12.5").unwrap());
+        assert_eq!(asks[0].price, FixedPoint::parse("0.06825").unwrap());
     }
 
     #[test]
@@ -271,16 +288,19 @@ mod tests {
     #[test]
     fn walk_level_capping() {
         let levels: Vec<String> = (0..50)
-            .map(|i| format!("[\"{}.0\", \"1.0\"]", 100 + i))
+            .map(|i| format!("[\"{}.0\",\"1.0\"]", 100 + i))
             .collect();
         let json_array = levels.join(",");
         let json = format!(r#"{{"event":"data","data":{{"bids":[{json_array}],"asks":[]}}}}"#);
         let (event, _micro, bids, asks) = walk(&json).expect("valid JSON");
         assert_eq!(event, "data");
-        assert_eq!(bids.len(), MAX_LEVELS);
+        assert_eq!(bids.len(), DEPTH);
         assert!(asks.is_empty());
-        assert_eq!(bids[0], ["100.0", "1.0"]);
-        assert_eq!(bids[MAX_LEVELS - 1], ["119.0", "1.0"]);
+        assert_eq!(bids[0].price, FixedPoint::parse("100.0").unwrap());
+        assert_eq!(
+            bids[DEPTH - 1].price,
+            FixedPoint::parse(&format!("{}.0", 100 + DEPTH - 1)).unwrap()
+        );
     }
 
     #[test]
@@ -288,8 +308,8 @@ mod tests {
         let json = r#"{"event":"data","channel":"order_book_ethbtc","data":{"timestamp":"1700000000","microtimestamp":"1700000000000000","bids":[["3.0","4.0"]],"asks":[["5.0","6.0"]]}}"#;
         let (event, _micro, bids, asks) = walk(json).expect("should skip extra data fields");
         assert_eq!(event, "data");
-        assert_eq!(bids[0], ["3.0", "4.0"]);
-        assert_eq!(asks[0], ["5.0", "6.0"]);
+        assert_eq!(bids[0].price, FixedPoint::parse("3.0").unwrap());
+        assert_eq!(asks[0].price, FixedPoint::parse("5.0").unwrap());
     }
 
     #[test]
@@ -301,8 +321,8 @@ mod tests {
         assert_eq!(micro, 1_772_110_554_110_141);
         assert_eq!(bids.len(), 2);
         assert_eq!(asks.len(), 2);
-        assert_eq!(bids[0], ["0.03035870", "1.35795438"]);
-        assert_eq!(asks[0], ["0.03036200", "10.00000000"]);
+        assert_eq!(bids[0].price, FixedPoint::parse("0.03035870").unwrap());
+        assert_eq!(asks[0].price, FixedPoint::parse("0.03036200").unwrap());
     }
 
     #[test]

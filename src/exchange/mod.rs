@@ -20,9 +20,8 @@ pub mod bitstamp;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use arrayvec::ArrayVec;
 use futures_util::{SinkExt, StreamExt};
 use rtrb::Producer;
 use tokio_tungstenite::connect_async_tls_with_config;
@@ -31,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::metrics::ExchangeMetrics;
-use crate::types::{FixedPoint, MAX_LEVELS, OrderBook, RawLevel};
+use crate::types::OrderBook;
 
 /// Connection timeout for WebSocket handshake.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -86,48 +85,6 @@ pub fn ws_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig 
         write_buffer_size: 0, // Flush every frame immediately.
         ..Default::default()
     }
-}
-
-/// `[price, qty]` string pairs → `ArrayVec<RawLevel>`. Returns `None` on any malformed pair.
-#[inline]
-fn parse_levels(raw: &[[&str; 2]]) -> Option<ArrayVec<RawLevel, MAX_LEVELS>> {
-    let mut levels = ArrayVec::new();
-    for &[price, amount] in raw {
-        let p = FixedPoint::parse(price)?;
-        let a = FixedPoint::parse(amount)?;
-        // Skip cleared levels (amount=0). Binance sends "0.00000000" for
-        // price levels that have been fully consumed or cancelled.
-        if a.raw() == 0 {
-            continue;
-        }
-        if levels
-            .try_push(RawLevel {
-                price: p,
-                amount: a,
-            })
-            .is_err()
-        {
-            break;
-        }
-    }
-    Some(levels)
-}
-
-/// Parse walker output into an `OrderBook`. Returns `None` if any level is malformed.
-#[inline]
-#[must_use]
-pub fn build_book(
-    exchange: &'static str,
-    bids: &[[&str; 2]],
-    asks: &[[&str; 2]],
-    decode_start: Instant,
-) -> Option<OrderBook> {
-    Some(OrderBook {
-        exchange,
-        bids: parse_levels(bids)?,
-        asks: parse_levels(asks)?,
-        decode_start,
-    })
 }
 
 /// Push book into SPSC ring. Drops on full (stale data is correct to drop for
@@ -205,17 +162,16 @@ pub async fn run_ws_loop<H: WsHandler>(
                 metrics.errors.fetch_add(1, Relaxed);
                 error!(exchange = H::NAME, "connection timed out");
             }
-            Ok(Ok((ws_stream, _))) => {
+            Ok(Ok((mut ws_stream, _))) => {
                 info!(exchange = H::NAME, "connected");
                 metrics.connected.store(true, Relaxed);
                 backoff_ms = INITIAL_BACKOFF_MS;
                 handler.on_connected();
 
-                let (mut write, mut read) = ws_stream.split();
-
-                // Send optional subscribe message.
+                // Send optional subscribe message on the unsplit stream.
+                // No split() = no BiLock = no atomic CAS per frame read.
                 if let Some(msg) = handler.subscribe_message(&symbol)
-                    && let Err(e) = write.send(Message::Text(msg)).await
+                    && let Err(e) = ws_stream.send(Message::Text(msg)).await
                 {
                     metrics.errors.fetch_add(1, Relaxed);
                     error!(exchange = H::NAME, error = %e, "subscribe failed");
@@ -234,7 +190,7 @@ pub async fn run_ws_loop<H: WsHandler>(
                     continue;
                 }
 
-                // Inner read loop.
+                // Inner read loop -- reads directly from unsplit stream.
                 loop {
                     let text = tokio::select! {
                         _ = cancel.cancelled() => {
@@ -242,7 +198,7 @@ pub async fn run_ws_loop<H: WsHandler>(
                             metrics.connected.store(false, Relaxed);
                             return;
                         }
-                        msg = read.next() => match msg {
+                        msg = ws_stream.next() => match msg {
                             Some(Ok(Message::Text(t))) => t,
                             Some(Ok(_)) => continue,
                             Some(Err(e)) => {
@@ -329,14 +285,13 @@ mod tests {
 
     use super::*;
     use crate::testutil::{book, exchange_metrics, raw};
-    use crate::types::FixedPoint;
 
     #[test]
     fn try_send_ring_full_drops() {
         // 1-slot ring: push one to fill it, then push another -- should drop, not error.
         let (mut producer, _consumer) = rtrb::RingBuffer::new(1);
         let m = exchange_metrics("test");
-        let b = book("a", &[raw(100.0, 1.0)], &[raw(101.0, 1.0)]);
+        let b = book(0, &[raw(100.0, 1.0)], &[raw(101.0, 1.0)]);
         assert!(try_send_book(&mut producer, b.clone(), &m));
         // Ring is now full -- next push drops the book but returns true.
         assert!(try_send_book(&mut producer, b, &m));
@@ -350,49 +305,8 @@ mod tests {
         drop(consumer); // Abandon the consumer.
         assert!(!try_send_book(
             &mut producer,
-            book("a", &[raw(100.0, 1.0)], &[raw(101.0, 1.0)]),
+            book(0, &[raw(100.0, 1.0)], &[raw(101.0, 1.0)]),
             &m
         ));
-    }
-
-    #[test]
-    fn parse_levels_filters_zero_amount() {
-        // Binance sends amount="0.00000000" for cleared price levels.
-        let raw = [
-            ["100.0", "5.0"],
-            ["99.0", "0.00000000"], // cleared level
-            ["98.0", "3.0"],
-        ];
-        let levels = parse_levels(&raw).unwrap();
-        assert_eq!(levels.len(), 2);
-        assert_eq!(levels[0].price, FixedPoint::parse("100.0").unwrap());
-        assert_eq!(levels[1].price, FixedPoint::parse("98.0").unwrap());
-    }
-
-    #[test]
-    fn parse_levels_rejects_malformed() {
-        let cases: &[(&[[&str; 2]], &str)] = &[
-            (&[["not_a_number", "1.0"]], "bad price"),
-            (&[["100.0", "xyz"]], "bad amount"),
-            (&[["100.0", "1.0"], ["bad", "2.0"]], "bad second level"),
-        ];
-        for &(input, label) in cases {
-            assert!(parse_levels(input).is_none(), "expected None for {label}");
-        }
-    }
-
-    #[test]
-    fn parse_levels_empty() {
-        let raw: &[[&str; 2]] = &[];
-        let levels = parse_levels(raw).unwrap();
-        assert!(levels.is_empty());
-    }
-
-    #[test]
-    fn build_book_returns_none_on_malformed() {
-        // Valid bids + malformed asks → None (propagates parse failure).
-        let bids = [["100.0", "1.0"]];
-        let asks = [["invalid", "1.0"]];
-        assert!(build_book("test", &bids, &asks, Instant::now()).is_none());
     }
 }

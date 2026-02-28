@@ -1,20 +1,14 @@
 //! Shared scanner utilities for zero-copy JSON parsing.
 //!
-//! Provides a byte-level `Scanner` and `read_levels` helper used by per-exchange
-//! parsers in their respective adapter modules. Uses SIMD-accelerated substring
-//! search (`memchr::memmem`) for key lookup.
-//!
-//! Input `&str` (guaranteed UTF-8 from WS text frames) is scanned by byte offset;
-//! price/qty strings are returned as `&str` slices -- no buffer mutation, no heap
-//! allocation.
+//! Provides a byte-level `Scanner` with fused `read_quoted_decimal` and
+//! `read_raw_levels` that parse JSON quoted decimals directly into `FixedPoint`
+//! in a single forward pass -- no intermediate `&str`, no double-scan.
+//! Uses SIMD-accelerated substring search (`memchr::memmem`) for key lookup.
 
 use arrayvec::ArrayVec;
 use memchr::memmem;
 
-use crate::types::MAX_LEVELS;
-
-/// Borrowed price/qty string pairs extracted from a JSON array.
-pub(crate) type Levels<'a> = ArrayVec<[&'a str; 2], MAX_LEVELS>;
+use crate::types::{FixedPoint, POW10, RawLevel};
 
 /// Byte scanner that tracks position in an input buffer.
 pub(crate) struct Scanner<'a> {
@@ -48,9 +42,11 @@ impl<'a> Scanner<'a> {
         }
     }
 
+    /// Raw byte check without whitespace skipping. Exchange APIs always send
+    /// compact JSON (no whitespace in level arrays), so `skip_ws()` overhead
+    /// is eliminated on the hot path.
     #[inline]
-    pub(crate) fn expect(&mut self, byte: u8) -> bool {
-        self.skip_ws();
+    pub(crate) fn expect_byte(&mut self, byte: u8) -> bool {
         if self.pos < self.buf.len() && self.buf[self.pos] == byte {
             self.pos += 1;
             true
@@ -120,60 +116,127 @@ impl<'a> Scanner<'a> {
         val
     }
 
-    /// Seek to a key pattern and read levels. Returns empty if key is absent.
+    /// Parse a JSON quoted decimal directly into [`FixedPoint`] in a single
+    /// forward pass. Opens `"`, scans digits/dot building `int_part`+`frac_part`,
+    /// closes `"`. No intermediate `&str`, no escape handling (decimal strings
+    /// never contain backslashes).
+    ///
+    /// Assumes compact JSON (no leading whitespace). Called exclusively from
+    /// `read_raw_levels` on exchange data where arrays are always compact.
     #[inline]
-    pub(crate) fn read_optional_levels(
+    pub(crate) fn read_quoted_decimal(&mut self) -> Option<FixedPoint> {
+        if self.pos >= self.buf.len() || self.buf[self.pos] != b'"' {
+            return None;
+        }
+        self.pos += 1; // opening quote
+
+        let mut int_part: u64 = 0;
+        let mut int_digits: u32 = 0;
+        while self.pos < self.buf.len() && self.buf[self.pos] != b'.' && self.buf[self.pos] != b'"'
+        {
+            let d = self.buf[self.pos].wrapping_sub(b'0');
+            if d > 9 {
+                return None;
+            }
+            int_part = int_part.checked_mul(10)?.checked_add(u64::from(d))?;
+            int_digits += 1;
+            self.pos += 1;
+        }
+
+        let mut frac_part: u64 = 0;
+        let mut frac_digits: u32 = 0;
+        if self.pos < self.buf.len() && self.buf[self.pos] == b'.' {
+            self.pos += 1;
+            while self.pos < self.buf.len() && self.buf[self.pos] != b'"' && frac_digits < 8 {
+                let d = self.buf[self.pos].wrapping_sub(b'0');
+                if d > 9 {
+                    return None;
+                }
+                frac_part = frac_part * 10 + u64::from(d);
+                frac_digits += 1;
+                self.pos += 1;
+            }
+            // Skip any fractional digits beyond 8.
+            while self.pos < self.buf.len() && self.buf[self.pos] != b'"' {
+                let d = self.buf[self.pos].wrapping_sub(b'0');
+                if d > 9 {
+                    return None;
+                }
+                self.pos += 1;
+            }
+        }
+
+        // Reject bare "." or empty string.
+        if int_digits == 0 && frac_digits == 0 {
+            return None;
+        }
+
+        // Closing quote.
+        if self.pos >= self.buf.len() || self.buf[self.pos] != b'"' {
+            return None;
+        }
+        self.pos += 1;
+
+        frac_part *= POW10[(8 - frac_digits) as usize];
+        let value = int_part
+            .checked_mul(FixedPoint::SCALE)?
+            .checked_add(frac_part)?;
+        Some(FixedPoint::from_raw(value))
+    }
+
+    /// Seek to a key pattern and read raw levels. Returns empty if key is absent.
+    #[inline]
+    pub(crate) fn read_optional_raw_levels<const N: usize>(
         &mut self,
         finder: &memmem::Finder<'_>,
-    ) -> Option<Levels<'a>> {
+    ) -> Option<ArrayVec<RawLevel, N>> {
         if self.seek(finder).is_some() {
-            read_levels(self)
+            read_raw_levels(self)
         } else {
-            Some(Levels::new())
+            Some(ArrayVec::new())
         }
     }
 }
 
-/// Read an array of `[price, qty]` pairs, keeping the first `N`.
+/// Read an array of `["price","qty"]` pairs, parsing each directly into
+/// [`RawLevel`] via `read_quoted_decimal`. Filters zero-amount levels inline.
+/// Keeps the first `N` non-zero levels; once at capacity, returns immediately.
 ///
-/// Once at capacity, returns immediately -- the caller's `seek()` will
-/// skip past the remaining elements to the next key. No drain loop needed:
-/// level data contains only decimal strings, so `"asks":` can never
-/// false-match inside it.
-pub(crate) fn read_levels<'a, const N: usize>(
-    s: &mut Scanner<'a>,
-) -> Option<ArrayVec<[&'a str; 2], N>> {
-    if !s.expect(b'[') {
+/// **Compact JSON only**: all byte checks are direct — no `skip_ws()` overhead.
+/// Exchange APIs (Binance, Bitstamp) always send compact arrays with no
+/// whitespace between brackets, commas, or quoted decimals. This eliminates
+/// ~160 redundant whitespace checks per 20-level message.
+pub(crate) fn read_raw_levels<const N: usize>(
+    s: &mut Scanner<'_>,
+) -> Option<ArrayVec<RawLevel, N>> {
+    if !s.expect_byte(b'[') {
         return None;
     }
     let mut levels = ArrayVec::new();
-    s.skip_ws();
     if s.peek() == Some(b']') {
         s.pos += 1;
         return Some(levels);
     }
     loop {
-        s.skip_ws();
-        if !s.expect(b'[') {
+        if !s.expect_byte(b'[') {
             return None;
         }
-        let price = s.read_string()?;
-        if !s.expect(b',') {
+        let price = s.read_quoted_decimal()?;
+        if !s.expect_byte(b',') {
             return None;
         }
-        let qty = s.read_string()?;
-        if !s.expect(b']') {
+        let amount = s.read_quoted_decimal()?;
+        if !s.expect_byte(b']') {
             return None;
         }
-        if levels.try_push([price, qty]).is_err() {
+        // Filter zero-amount levels inline (Binance sends "0.00000000" for cleared levels).
+        if amount.raw() != 0 && levels.try_push(RawLevel { price, amount }).is_err() {
             return Some(levels);
         }
-        s.skip_ws();
         match s.peek() {
             Some(b',') => {
                 s.pos += 1;
                 if levels.len() == N {
-                    // At capacity -- bail out. Caller's seek() skips the rest.
                     return Some(levels);
                 }
             }
@@ -201,6 +264,7 @@ pub(crate) fn extract_string<'a>(json: &'a str, pattern: &[u8]) -> Option<&'a st
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::FixedPoint;
 
     #[test]
     fn read_string_basic() {
@@ -243,5 +307,79 @@ mod tests {
         assert_eq!(extract_string(json, b"\"message\":"), Some("hello world"));
         assert_eq!(extract_string(json, b"\"event\":"), Some("data"));
         assert_eq!(extract_string(json, b"\"missing\":"), None);
+    }
+
+    // ── Fused read_quoted_decimal tests ──────────────────────────────────
+
+    #[test]
+    fn read_quoted_decimal_basic() {
+        let mut s = Scanner::new(r#""123.45600000""#);
+        let fp = s.read_quoted_decimal().unwrap();
+        assert_eq!(fp, FixedPoint::parse("123.45600000").unwrap());
+    }
+
+    #[test]
+    fn read_quoted_decimal_fractional_only() {
+        let mut s = Scanner::new(r#""0.06824000""#);
+        let fp = s.read_quoted_decimal().unwrap();
+        assert_eq!(fp, FixedPoint::parse("0.06824000").unwrap());
+    }
+
+    #[test]
+    fn read_quoted_decimal_integer_only() {
+        let mut s = Scanner::new(r#""42""#);
+        let fp = s.read_quoted_decimal().unwrap();
+        assert_eq!(fp, FixedPoint::parse("42").unwrap());
+    }
+
+    #[test]
+    fn read_quoted_decimal_zero() {
+        let mut s = Scanner::new(r#""0.00000000""#);
+        let fp = s.read_quoted_decimal().unwrap();
+        assert_eq!(fp.raw(), 0);
+    }
+
+    // ── Fused read_raw_levels tests ──────────────────────────────────────
+
+    #[test]
+    fn read_raw_levels_filters_zero_amount() {
+        let json = r#"[["100.0","5.0"],["99.0","0.00000000"],["98.0","3.0"]]"#;
+        let mut s = Scanner::new(json);
+        let levels = read_raw_levels::<20>(&mut s).unwrap();
+        assert_eq!(levels.len(), 2);
+        assert_eq!(levels[0].price, FixedPoint::parse("100.0").unwrap());
+        assert_eq!(levels[1].price, FixedPoint::parse("98.0").unwrap());
+    }
+
+    #[test]
+    fn read_raw_levels_rejects_malformed() {
+        for (input, label) in [
+            (r#"[["not_a_number","1.0"]]"#, "bad price"),
+            (r#"[["100.0","xyz"]]"#, "bad amount"),
+        ] {
+            let mut s = Scanner::new(input);
+            assert!(
+                read_raw_levels::<20>(&mut s).is_none(),
+                "expected None for {label}: {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_raw_levels_empty() {
+        let mut s = Scanner::new("[]");
+        let levels = read_raw_levels::<20>(&mut s).unwrap();
+        assert!(levels.is_empty());
+    }
+
+    #[test]
+    fn read_raw_levels_caps_at_n() {
+        let pairs: Vec<String> = (0..30)
+            .map(|i| format!(r#"["{}.0","1.0"]"#, 100 + i))
+            .collect();
+        let json = format!("[{}]", pairs.join(","));
+        let mut s = Scanner::new(&json);
+        let levels = read_raw_levels::<5>(&mut s).unwrap();
+        assert_eq!(levels.len(), 5);
     }
 }

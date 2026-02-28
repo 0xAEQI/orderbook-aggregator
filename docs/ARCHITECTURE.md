@@ -50,19 +50,21 @@ For maximum isolation, add `isolcpus=3` to kernel boot parameters -- this preven
 
 Each exchange adapter connects with `TCP_NODELAY` and `write_buffer_size: 0` for immediate frame delivery. The WS text frame arrives as a `String` from tokio-tungstenite -- the only heap allocation on the hot path (unavoidable without kernel bypass).
 
-### Stage 2: JSON Parse
+### Stage 2: JSON Parse (Fused Walker)
 
-Each exchange adapter has its own byte walker (~15 lines) matching its specific wire format in a single forward pass. The walkers use SIMD-accelerated substring search (`memchr::memmem`) via shared `Scanner` utilities to seek directly to `"bids":` and `"asks":` -- skipping all envelope fields without parsing them. Price/quantity strings are borrowed as `&str` slices from the input buffer (zero-copy). The `FixedPoint::parse` function converts decimal strings to `u64` integers with 10^8 scaling -- no intermediate `f64`.
+Each exchange adapter has its own fused byte walker matching its specific wire format in a single forward pass. The walkers use SIMD-accelerated substring search (`memchr::memmem`) via shared `Scanner` utilities to seek directly to `"bids":` and `"asks":` -- skipping all envelope fields without parsing them. `read_quoted_decimal()` opens the quote, scans digits/dot building `int_part`+`frac_part` in a single pass, closes the quote, and returns `FixedPoint` directly -- no intermediate `&str`, no double-scan. For 20-level Binance messages (80 quoted decimals), this eliminates 80 redundant string scans. Zero-amount levels are filtered inline during parsing.
+
+The level parser (`read_raw_levels`) uses a **compact JSON fast path**: all byte checks are direct (`expect_byte`) with no whitespace scanning. Exchange APIs always send compact arrays, so the ~160 `skip_ws()` calls per 20-level message are eliminated entirely.
 
 **Latency**: ~1.94μs per 20-level snapshot (Criterion median).
 
 ### Stage 3: SPSC Transfer
 
-The parsed `OrderBook` (stack-allocated `ArrayVec<Level, 20>`) is pushed into the per-exchange SPSC ring buffer. The push is a single `store(Release)` -- no CAS, no mutex, no contention. Ring capacity is 4 slots; if full, the stale snapshot is dropped (correct for order book data -- the next frame supersedes it).
+The parsed `OrderBook` (stack-allocated `ArrayVec<RawLevel, DEPTH>`) is pushed into the per-exchange SPSC ring buffer. The push is a single `store(Release)` -- no CAS, no mutex, no contention. Ring capacity is 4 slots; if full, the stale snapshot is dropped (correct for order book data -- the next frame supersedes it).
 
 ### Stage 4: Merge
 
-The merger performs one merge-and-publish per input: every `pop()` from any consumer triggers a fresh merge with the latest data from all exchanges. This ensures no updates are silently collapsed and every book's end-to-end latency is individually recorded. The k-way merge uses stack-allocated cursors to interleave pre-sorted bid/ask arrays in O(TOP_N × k) comparisons (~20 for 2 exchanges).
+The merger performs one merge-and-publish per input: every `pop()` from any consumer triggers a fresh merge with the latest data from all exchanges. This ensures no updates are silently collapsed and every book's end-to-end latency is individually recorded. `BookStore` uses direct array indexing (`exchange_id` IS the index) for O(1) insert -- no linear scan. The k-way merge uses stack-allocated cursors to interleave pre-sorted bid/ask arrays in O(DEPTH × k) comparisons (~20 for 2 exchanges). Merge latency is measured offline by Criterion benchmarks; only E2E latency is recorded on the hot path (saves 3 atomic ops per merge).
 
 **Latency**: ~245ns per merge (Criterion median).
 
@@ -85,24 +87,28 @@ Production P50 (live exchange data, shared hardware): **~9μs**. P99: **~25μs**
 
 ## Memory Layout
 
-All hot-path types are stack-allocated (no heap). `Level` is `Copy`; `OrderBook` and `Summary` are `Clone`:
+All hot-path types are stack-allocated (no heap). `Level` is `Copy`; `OrderBook` and `Summary` are `Clone`. Exchange attribution uses `ExchangeId = u8` instead of `&'static str` (16→1 byte), reducing `Level` from 32 to 24 bytes (25% reduction). Name lookup via `exchange_name()` happens only in `to_proto()` (cold path, per-client gRPC task).
 
 ```
-Level (32 bytes):
-  exchange: &'static str  (16 bytes: ptr + len)
-  price:    FixedPoint     (8 bytes: u64)
-  amount:   FixedPoint     (8 bytes: u64)
+Level (24 bytes):
+  price:       FixedPoint   (8 bytes: u64)
+  amount:      FixedPoint   (8 bytes: u64)
+  exchange_id: ExchangeId   (1 byte: u8 + 7 padding)
 
-OrderBook (~1KB):
-  exchange:     &'static str
-  bids:         ArrayVec<Level, 20>  (inline array, no heap)
-  asks:         ArrayVec<Level, 20>  (inline array, no heap)
+RawLevel (16 bytes):
+  price:  FixedPoint  (8 bytes: u64)
+  amount: FixedPoint  (8 bytes: u64)
+
+OrderBook (~340 bytes, DEPTH=10):
+  exchange_id:  ExchangeId
+  bids:         ArrayVec<RawLevel, DEPTH>  (inline array, no heap)
+  asks:         ArrayVec<RawLevel, DEPTH>  (inline array, no heap)
   decode_start: Instant
 
-Summary (~700 bytes):
-  spread: f64
-  bids:   ArrayVec<Level, 10>  (inline array, no heap)
-  asks:   ArrayVec<Level, 10>  (inline array, no heap)
+Summary (~500 bytes, DEPTH=10):
+  spread_raw: i64
+  bids:       ArrayVec<Level, DEPTH>  (inline array, no heap)
+  asks:       ArrayVec<Level, DEPTH>  (inline array, no heap)
 ```
 
 The only heap allocations are:

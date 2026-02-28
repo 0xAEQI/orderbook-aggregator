@@ -14,7 +14,20 @@ pub mod server;
 pub(crate) mod testutil;
 pub mod types;
 
+use types::ExchangeId;
+
 /// Supported exchanges. Single source of truth -- sizes stack arrays in the
 /// merger and registers metrics. To add an exchange: add its name here and
 /// wire its handler in `main.rs`.
 pub const EXCHANGES: &[&str] = &["binance", "bitstamp"];
+
+/// Compact exchange IDs for hot-path types. Name lookup via [`exchange_name`].
+pub const BINANCE_ID: ExchangeId = 0;
+pub const BITSTAMP_ID: ExchangeId = 1;
+
+/// Resolve an [`ExchangeId`] to its string name (cold path, for proto/logging).
+#[inline]
+#[must_use]
+pub fn exchange_name(id: ExchangeId) -> &'static str {
+    EXCHANGES[id as usize]
+}

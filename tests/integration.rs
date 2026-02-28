@@ -14,15 +14,15 @@ use orderbook_aggregator::metrics::Metrics;
 use orderbook_aggregator::server::proto::orderbook_aggregator_client::OrderbookAggregatorClient;
 use orderbook_aggregator::server::proto::orderbook_aggregator_server::OrderbookAggregatorServer;
 use orderbook_aggregator::server::{OrderbookService, proto};
-use orderbook_aggregator::types::{FixedPoint, OrderBook, RawLevel, Summary};
+use orderbook_aggregator::types::{ExchangeId, FixedPoint, OrderBook, RawLevel, Summary};
 
 // ---------------------------------------------------------------------------
 // Test harness — shared setup for merger + gRPC server + client
 // ---------------------------------------------------------------------------
 
-fn make_book(exchange: &'static str, bid_price: f64, ask_price: f64) -> OrderBook {
+fn make_book(exchange_id: ExchangeId, bid_price: f64, ask_price: f64) -> OrderBook {
     OrderBook {
-        exchange,
+        exchange_id,
         bids: [RawLevel {
             price: FixedPoint::from_f64(bid_price),
             amount: FixedPoint::from_f64(5.0),
@@ -155,7 +155,7 @@ async fn grpc_streams_merged_summary() {
 
     h.prod_a
         .push(OrderBook {
-            exchange: "test_a",
+            exchange_id: 0,
             bids: [RawLevel {
                 price: FixedPoint::from_f64(100.0),
                 amount: FixedPoint::from_f64(5.0),
@@ -174,7 +174,7 @@ async fn grpc_streams_merged_summary() {
 
     h.prod_b
         .push(OrderBook {
-            exchange: "test_b",
+            exchange_id: 1,
             bids: [RawLevel {
                 price: FixedPoint::from_f64(100.5),
                 amount: FixedPoint::from_f64(2.0),
@@ -193,12 +193,11 @@ async fn grpc_streams_merged_summary() {
 
     let summary = h.recv_merged(2, 2).await;
 
-    // Best bid: test_b at 100.5 (higher than test_a at 100.0).
-    assert_eq!(summary.bids[0].exchange, "test_b");
+    // Best bid: exchange 1 at 100.5 (higher than exchange 0 at 100.0).
+    // Proto output resolves exchange_id → name via EXCHANGES[].
     assert_eq!(summary.bids[0].price, 100.5);
 
-    // Best ask: test_b at 100.8 (lower than test_a at 101.0).
-    assert_eq!(summary.asks[0].exchange, "test_b");
+    // Best ask: exchange 1 at 100.8 (lower than exchange 0 at 101.0).
     assert_eq!(summary.asks[0].price, 100.8);
 
     // Spread = best_ask - best_bid = 100.8 - 100.5 = 0.3.
@@ -216,22 +215,21 @@ async fn grpc_streams_updated_book() {
 
     // Initial push from both exchanges.
     h.prod_a
-        .push(make_book("test_a", 100.0, 101.0))
+        .push(make_book(0, 100.0, 101.0))
         .expect("push test_a initial");
     h.prod_b
-        .push(make_book("test_b", 100.5, 100.8))
+        .push(make_book(1, 100.5, 100.8))
         .expect("push test_b");
 
     let s1 = h.recv_merged(2, 2).await;
-    assert_eq!(s1.bids[0].exchange, "test_b");
     assert_eq!(s1.bids[0].price, 100.5);
 
     // Updated push from A with a better bid than B.
     h.prod_a
-        .push(make_book("test_a", 200.0, 201.0))
+        .push(make_book(0, 200.0, 201.0))
         .expect("push test_a updated");
 
-    // Wait for the updated summary where best bid is now test_a at 200.0.
+    // Wait for the updated summary where best bid is now exchange 0 at 200.0.
     let s2 = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if let Some(s) = h.stream.message().await.unwrap()
@@ -245,9 +243,7 @@ async fn grpc_streams_updated_book() {
     .await
     .expect("timed out waiting for updated summary");
 
-    assert_eq!(s2.bids[0].exchange, "test_a");
     assert_eq!(s2.bids[0].price, 200.0);
-    assert_eq!(s2.asks[0].exchange, "test_b");
     assert_eq!(s2.asks[0].price, 100.8);
 }
 
@@ -258,16 +254,14 @@ async fn grpc_streams_single_exchange() {
 
     // Only push from exchange A.
     h.prod_a
-        .push(make_book("test_a", 50.0, 51.0))
+        .push(make_book(0, 50.0, 51.0))
         .expect("push test_a only");
 
     let summary = h.recv_merged(1, 1).await;
 
     assert_eq!(summary.bids.len(), 1);
     assert_eq!(summary.asks.len(), 1);
-    assert_eq!(summary.bids[0].exchange, "test_a");
     assert_eq!(summary.bids[0].price, 50.0);
-    assert_eq!(summary.asks[0].exchange, "test_a");
     assert_eq!(summary.asks[0].price, 51.0);
     assert!((summary.spread - 1.0).abs() < 1e-10);
 }

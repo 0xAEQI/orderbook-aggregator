@@ -196,8 +196,7 @@ pub struct Metrics {
     // Global counters
     pub merges: AtomicU64,
 
-    // Global histograms
-    pub merge_latency: PromHistogram,
+    // Global histograms (merge latency measured offline by Criterion benchmarks).
     pub e2e_latency: PromHistogram,
 
     start_time: Instant,
@@ -217,7 +216,6 @@ impl Metrics {
         Self {
             exchanges,
             merges: AtomicU64::new(0),
-            merge_latency: PromHistogram::new(),
             e2e_latency: PromHistogram::new(),
             start_time: Instant::now(),
         }
@@ -316,16 +314,7 @@ impl Metrics {
                 .render("orderbook_decode_duration_seconds", &labels, &mut out);
         }
 
-        // Global histograms.
-        write_header(
-            &mut out,
-            "orderbook_merge_duration_seconds",
-            "Order book merge latency",
-            "histogram",
-        );
-        self.merge_latency
-            .render("orderbook_merge_duration_seconds", "", &mut out);
-
+        // Global histogram (merge latency measured offline by Criterion benchmarks).
         write_header(
             &mut out,
             "orderbook_e2e_duration_seconds",
@@ -493,7 +482,6 @@ mod tests {
             "orderbook_exchange_up",
             "orderbook_uptime_seconds",
             "orderbook_decode_duration_seconds",
-            "orderbook_merge_duration_seconds",
             "orderbook_e2e_duration_seconds",
         ] {
             assert!(

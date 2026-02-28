@@ -16,7 +16,7 @@ Built for latency: **~9μs P50, ~25μs P99** end-to-end on shared hardware (WS f
 | [Benchmarks](docs/BENCHMARKS.md) | Criterion results, production latency, hardware sensitivity, how to reproduce |
 | [Design Tradeoffs](docs/TRADEOFFS.md) | Every major decision with alternatives considered and rationale |
 | [Monitoring](docs/MONITORING.md) | Prometheus metrics, Grafana dashboard, health endpoint |
-| [Testing](docs/TESTING.md) | 61-test suite, coverage breakdown, CI |
+| [Testing](docs/TESTING.md) | 75-test suite, coverage breakdown, CI |
 
 ## Quick Start
 
@@ -99,7 +99,7 @@ See [docs/TRADEOFFS.md](docs/TRADEOFFS.md) for alternatives considered and full 
 ## Testing
 
 ```bash
-cargo test     # 61 tests
+cargo test     # 75 tests
 cargo clippy   # 0 warnings, unsafe_code = "deny" (expect-gated for core pinning)
 cargo bench    # Criterion benchmarks
 ```

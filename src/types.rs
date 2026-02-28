@@ -10,11 +10,11 @@ use std::time::Instant;
 
 use arrayvec::ArrayVec;
 
-/// Max levels we keep per side from a single exchange (Binance sends 20).
-pub const MAX_LEVELS: usize = 20;
-
-/// Top N levels in the merged output sent to gRPC clients.
-pub const TOP_N: usize = 10;
+/// Order book depth: levels per side in both per-exchange books and merged
+/// output. Both exchanges send pre-sorted levels, so parsing more than the
+/// output depth per exchange is provably wasted work -- the (DEPTH+1)-th
+/// level from any exchange can never appear in the merged top-DEPTH.
+pub const DEPTH: usize = 10;
 
 /// Fixed-point decimal with 8 fractional digits: `value × 10⁻⁸` stored as `u64`.
 ///
@@ -25,7 +25,7 @@ pub const TOP_N: usize = 10;
 pub struct FixedPoint(u64);
 
 /// Powers of 10 for fractional digit padding (single multiply instead of loop).
-const POW10: [u64; 9] = [
+pub(crate) const POW10: [u64; 9] = [
     1,
     10,
     100,
@@ -118,6 +118,13 @@ impl FixedPoint {
         Self((v * Self::SCALE as f64).round() as u64)
     }
 
+    /// Construct from a pre-computed raw value (for fused parsing).
+    #[inline]
+    #[must_use]
+    pub fn from_raw(val: u64) -> Self {
+        Self(val)
+    }
+
     /// Raw inner value (for debugging/testing).
     #[inline]
     #[must_use]
@@ -142,6 +149,10 @@ impl fmt::Display for FixedPoint {
     }
 }
 
+/// Compact exchange identifier. Only 2 exchanges → `u8` suffices. Name lookup
+/// happens in `to_proto()` (cold path, per-client gRPC task).
+pub type ExchangeId = u8;
+
 /// A price/amount pair without exchange attribution. Used inside [`OrderBook`]
 /// where all levels come from the same exchange (16 bytes, `Copy`).
 #[derive(Debug, Clone, Copy)]
@@ -153,24 +164,24 @@ pub struct RawLevel {
 const _: () = assert!(size_of::<RawLevel>() == 16);
 
 /// A price level with exchange attribution. Used in merged [`Summary`] output
-/// where levels from different exchanges are interleaved (32 bytes, `Copy`).
+/// where levels from different exchanges are interleaved (24 bytes, `Copy`).
 #[derive(Debug, Clone, Copy)]
 pub struct Level {
-    pub exchange: &'static str,
     pub price: FixedPoint,
     pub amount: FixedPoint,
+    pub exchange_id: ExchangeId,
 }
 
-const _: () = assert!(size_of::<Level>() == 32);
+const _: () = assert!(size_of::<Level>() == 24);
 
 /// Single-exchange order book snapshot. Moved through the SPSC ring buffer.
 ///
 /// **Invariant**: bids sorted descending by price, asks ascending.
 #[derive(Debug, Clone)]
 pub struct OrderBook {
-    pub exchange: &'static str,
-    pub bids: ArrayVec<RawLevel, MAX_LEVELS>,
-    pub asks: ArrayVec<RawLevel, MAX_LEVELS>,
+    pub exchange_id: ExchangeId,
+    pub bids: ArrayVec<RawLevel, DEPTH>,
+    pub asks: ArrayVec<RawLevel, DEPTH>,
     /// When decode started (immediately after WS frame dispatch) -- e2e latency anchor.
     pub decode_start: Instant,
 }
@@ -182,8 +193,8 @@ pub struct Summary {
     /// Negative for crossed books. Zero if either side is empty.
     /// Convert to `f64` only at the proto boundary.
     pub spread_raw: i64,
-    pub bids: ArrayVec<Level, TOP_N>,
-    pub asks: ArrayVec<Level, TOP_N>,
+    pub bids: ArrayVec<Level, DEPTH>,
+    pub asks: ArrayVec<Level, DEPTH>,
 }
 
 #[cfg(test)]
@@ -274,6 +285,6 @@ mod tests {
     fn static_size_assertions() {
         assert_eq!(size_of::<FixedPoint>(), 8);
         assert_eq!(size_of::<RawLevel>(), 16);
-        assert_eq!(size_of::<Level>(), 32);
+        assert_eq!(size_of::<Level>(), 24);
     }
 }
