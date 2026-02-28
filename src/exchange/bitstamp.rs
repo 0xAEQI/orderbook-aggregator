@@ -115,7 +115,7 @@ impl WsHandler for BitstampHandler {
             metrics.errors.fetch_add(1, Relaxed);
             warn!(
                 exchange = "bitstamp",
-                payload_head = &text[..text.len().min(200)],
+                payload_head = &text[..text.floor_char_boundary(200)],
                 "parse error"
             );
             return HandleResult::Continue;

@@ -4,9 +4,9 @@
 //! terminal display with colored depth bars, spread, and exchange attribution.
 //!
 //! ```bash
-//! cargo run --release --bin client                                  # localhost:50051
-//! cargo run --release --bin client -- http://server:50051           # custom address
-//! cargo run --release --bin client -- http://localhost:50051 btcusdt # custom symbol
+//! cargo run --release --features client --bin client                                  # localhost:50051
+//! cargo run --release --features client --bin client -- http://server:50051           # custom address
+//! cargo run --release --features client --bin client -- http://localhost:50051 btcusdt # custom symbol
 //! ```
 
 use std::time::Instant;

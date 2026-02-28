@@ -94,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })?
     };
 
-    info!("spawned 3 dedicated OS threads: ws-binance, ws-bitstamp, merger");
+    info!("spawned dedicated OS threads: ws-binance, ws-bitstamp, merger");
 
     // Shutdown signal handler (SIGINT + SIGTERM).
     let shutdown_cancel = cancel.clone();

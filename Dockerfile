@@ -10,13 +10,13 @@ RUN mkdir -p src benches && \
     echo 'fn main() {}' > src/client.rs && \
     touch src/lib.rs && \
     echo 'fn main() {}' > benches/hot_path.rs && \
-    cargo build --release && \
+    cargo build --release --features client && \
     rm -rf src benches
 
 # Build the real binary.
 COPY src/ src/
 COPY benches/ benches/
-RUN touch src/main.rs src/client.rs src/lib.rs benches/hot_path.rs && cargo build --release
+RUN touch src/main.rs src/client.rs src/lib.rs benches/hot_path.rs && cargo build --release --features client
 
 # --- Runtime ---
 FROM debian:bookworm-slim

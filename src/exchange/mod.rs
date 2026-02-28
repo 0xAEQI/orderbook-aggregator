@@ -11,8 +11,8 @@
 //! no contention with the merger thread.
 //!
 //! Connections use `write_buffer_size: 0` for immediate frame flushing.
-//! Note: `TCP_NODELAY` is not explicitly set -- `tokio-tungstenite` does not
-//! expose the underlying `TcpStream` before the WebSocket upgrade.
+//! `TCP_NODELAY` is enabled via `connect_async_tls_with_config`'s
+//! `disable_nagle` parameter -- disables Nagle's algorithm for lower latency.
 
 pub mod binance;
 pub mod bitstamp;
