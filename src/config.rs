@@ -44,7 +44,11 @@ mod tests {
 
     #[test]
     fn validate_symbol_normalizes_to_lowercase() {
-        for (input, expected) in [("ETHBTC", "ethbtc"), ("EthBtc", "ethbtc"), ("abc123", "abc123")] {
+        for (input, expected) in [
+            ("ETHBTC", "ethbtc"),
+            ("EthBtc", "ethbtc"),
+            ("abc123", "abc123"),
+        ] {
             assert_eq!(validate_symbol(input).unwrap(), expected, "input: {input}");
         }
     }
@@ -58,7 +62,10 @@ mod tests {
             ("eth btc", "space"),
             ("eth.btc", "dot"),
         ] {
-            assert!(validate_symbol(input).is_err(), "expected Err for {label}: {input:?}");
+            assert!(
+                validate_symbol(input).is_err(),
+                "expected Err for {label}: {input:?}"
+            );
         }
     }
 }

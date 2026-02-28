@@ -316,7 +316,10 @@ mod tests {
             (r#"{"event": 123}"#, "event as number"),
             ("null", "null literal"),
         ] {
-            assert!(walk(input).is_none(), "expected None for {label}: {input:?}");
+            assert!(
+                walk(input).is_none(),
+                "expected None for {label}: {input:?}"
+            );
         }
     }
 }

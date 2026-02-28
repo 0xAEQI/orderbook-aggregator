@@ -194,14 +194,22 @@ mod tests {
 
     test_parse!(parse_integer_only, "123", 123 * FixedPoint::SCALE);
     test_parse!(parse_with_fractional, "0.06824000", 6_824_000);
-    test_parse!(parse_short_fractional, "101.5", 101 * FixedPoint::SCALE + 50_000_000);
+    test_parse!(
+        parse_short_fractional,
+        "101.5",
+        101 * FixedPoint::SCALE + 50_000_000
+    );
     test_parse!(parse_leading_dot, ".5", 50_000_000);
     test_parse!(parse_zero, "0", 0);
     test_parse!(parse_trailing_dot, "0.", 0);
     test_parse!(parse_leading_zeros, "00.1", 10_000_000);
     test_parse!(parse_truncates_beyond_8, "0.068240001", 6_824_000);
     test_parse!(parse_max_fractional, "0.99999999", 99_999_999);
-    test_parse!(parse_large_integer, "184467440737.0", 184_467_440_737 * FixedPoint::SCALE);
+    test_parse!(
+        parse_large_integer,
+        "184467440737.0",
+        184_467_440_737 * FixedPoint::SCALE
+    );
 
     #[test]
     fn parse_rejects_invalid_inputs() {
@@ -216,7 +224,10 @@ mod tests {
             (" 1", "leading space"),
         ];
         for &(input, label) in cases {
-            assert!(FixedPoint::parse(input).is_none(), "expected None for {label}: {input:?}");
+            assert!(
+                FixedPoint::parse(input).is_none(),
+                "expected None for {label}: {input:?}"
+            );
         }
     }
 

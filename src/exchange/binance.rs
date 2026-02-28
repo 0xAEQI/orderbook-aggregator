@@ -230,7 +230,10 @@ mod tests {
             ("null", "null literal"),
             (r#"{"bids":[]}"#, "missing asks"),
         ] {
-            assert!(walk(input).is_none(), "expected None for {label}: {input:?}");
+            assert!(
+                walk(input).is_none(),
+                "expected None for {label}: {input:?}"
+            );
         }
     }
 }
