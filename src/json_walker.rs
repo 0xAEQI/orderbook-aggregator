@@ -197,3 +197,51 @@ pub(crate) fn extract_string<'a>(json: &'a str, pattern: &[u8]) -> Option<&'a st
     s.seek(&finder)?;
     s.read_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_string_basic() {
+        let mut s = Scanner::new(r#""hello""#);
+        assert_eq!(s.read_string(), Some("hello"));
+    }
+
+    #[test]
+    fn read_string_with_escape() {
+        let mut s = Scanner::new(r#""say \"hi\"""#);
+        // The scanner doesn't unescape — it returns the raw content between outer quotes.
+        assert_eq!(s.read_string(), Some(r#"say \"hi\""#));
+    }
+
+    #[test]
+    fn read_u64_parses_number() {
+        let mut s = Scanner::new("42,");
+        assert_eq!(s.read_u64(), 42);
+        assert_eq!(s.pos, 2); // Stopped at the comma.
+    }
+
+    #[test]
+    fn read_u64_returns_zero_on_overflow() {
+        let mut s = Scanner::new("99999999999999999999"); // > u64::MAX
+        assert_eq!(s.read_u64(), 0);
+    }
+
+    #[test]
+    fn seek_advances_past_needle() {
+        let mut s = Scanner::new(r#"{"key":"value"}"#);
+        let finder = memmem::Finder::new(b"\"key\":");
+        s.seek(&finder).unwrap();
+        // Position should be right after the needle, ready to read the value.
+        assert_eq!(s.read_string(), Some("value"));
+    }
+
+    #[test]
+    fn extract_string_finds_value() {
+        let json = r#"{"event":"data","message":"hello world"}"#;
+        assert_eq!(extract_string(json, b"\"message\":"), Some("hello world"));
+        assert_eq!(extract_string(json, b"\"event\":"), Some("data"));
+        assert_eq!(extract_string(json, b"\"missing\":"), None);
+    }
+}

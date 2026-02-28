@@ -3,30 +3,36 @@
 ## Running
 
 ```bash
-cargo test     # 61 tests
+cargo test     # 71 tests
 cargo clippy   # 0 warnings, unsafe_code = "deny" (expect-gated for core pinning)
 cargo bench    # Criterion benchmarks (see BENCHMARKS.md)
 ```
 
 ## Coverage
 
-61 tests covering:
+71 tests covering:
 
-**Integration** -- end-to-end gRPC stream: mock exchange data through SPSC merger to gRPC client.
+**Integration** -- end-to-end gRPC stream: mock exchange data through SPSC merger to gRPC client, updated book prices reflected in stream, single-exchange degraded mode delivery.
 
 **Merger** -- cross-exchange merging, single-exchange degraded mode, crossed book (negative spread), truncation to top-10, empty book handling, bid/ask tiebreaking by amount, k-way interleave correctness, stale book eviction, asymmetric empty sides, single-side-only merge.
 
-**BookStore** -- insert-overwrites-existing, overflow beyond MAX_EXCHANGES silently dropped, evict_stale keeps fresh books.
+**BookStore** -- insert-overwrites-existing, overflow beyond MAX_EXCHANGES silently dropped, evict_stale keeps fresh books, reinsert after eviction.
 
-**SPSC ring** -- ring-full drops snapshot (returns true), consumer-abandoned returns false, zero-amount levels filtered.
+**SPSC ring** -- ring-full drops snapshot (returns true), consumer-abandoned returns false, zero-amount levels filtered, malformed level rejection.
 
 **Health endpoint** -- all-connected returns OK, partial returns DEGRADED, none returns DOWN (503).
 
 **Histogram** -- record + render produces correct cumulative bucket counts, sum, and count. Exact bucket boundary placement, overflow into +Inf, label rendering.
 
+**Metrics registry** -- `to_prometheus()` renders all TYPE headers, per-exchange labels, and recorded counter values.
+
+**gRPC server** -- `to_proto` converts internal `Summary` with `FixedPoint` values to proto `f64` fields correctly.
+
 **FixedPoint** -- parse formats (integer, fractional, leading dot, trailing dot, dot-only, leading zeros, zero, truncation), rejection of invalid input and overflow, f64 roundtrip, ordering, display.
 
-**JSON walker** -- Binance/Bitstamp happy path, unknown field tolerance, empty levels, non-data events, level capping at 20, malformed JSON rejection.
+**JSON walker (Scanner)** -- `read_string` basic + escaped, `read_u64` parse + overflow, `seek` advances past needle, `extract_string` cold-path key extraction.
+
+**JSON walker (exchange)** -- Binance/Bitstamp happy path, unknown field tolerance, empty levels, non-data events, level capping at 20, malformed JSON rejection.
 
 **Exchange parsers** -- realistic payloads, unknown field tolerance, level capping.
 

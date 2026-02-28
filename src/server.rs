@@ -63,3 +63,43 @@ fn to_proto(summary: Summary) -> proto::Summary {
         asks: summary.asks.into_iter().map(cvt).collect(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{FixedPoint, Level};
+
+    #[allow(clippy::float_cmp)] // Exact f64 values from FixedPoint -- no arithmetic rounding.
+    #[test]
+    fn to_proto_converts_summary() {
+        let mut bids = arrayvec::ArrayVec::new();
+        bids.push(Level {
+            exchange: "test_a",
+            price: FixedPoint::from_f64(100.5),
+            amount: FixedPoint::from_f64(2.0),
+        });
+        let mut asks = arrayvec::ArrayVec::new();
+        asks.push(Level {
+            exchange: "test_b",
+            price: FixedPoint::from_f64(100.8),
+            amount: FixedPoint::from_f64(4.0),
+        });
+        let summary = Summary {
+            spread_raw: 30_000_000, // 0.3 in 8-decimal fixed point
+            bids,
+            asks,
+        };
+
+        let proto = to_proto(summary);
+
+        assert!((proto.spread - 0.3).abs() < 1e-10);
+        assert_eq!(proto.bids.len(), 1);
+        assert_eq!(proto.asks.len(), 1);
+        assert_eq!(proto.bids[0].exchange, "test_a");
+        assert_eq!(proto.bids[0].price, 100.5);
+        assert_eq!(proto.bids[0].amount, 2.0);
+        assert_eq!(proto.asks[0].exchange, "test_b");
+        assert_eq!(proto.asks[0].price, 100.8);
+        assert_eq!(proto.asks[0].amount, 4.0);
+    }
+}

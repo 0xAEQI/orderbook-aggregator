@@ -134,25 +134,12 @@ pub fn parse_depth_json(json: &str) -> Option<OrderBook> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::BINANCE_JSON_3L;
     use crate::types::FixedPoint;
-
-    const BINANCE_JSON: &str = r#"{
-        "lastUpdateId": 123456789,
-        "bids": [
-            ["0.06824000", "12.50000000"],
-            ["0.06823000", "8.30000000"],
-            ["0.06822000", "5.00000000"]
-        ],
-        "asks": [
-            ["0.06825000", "10.00000000"],
-            ["0.06826000", "7.20000000"],
-            ["0.06827000", "3.50000000"]
-        ]
-    }"#;
 
     #[test]
     fn parse_binance_snapshot() {
-        let book = parse_depth_json(BINANCE_JSON).expect("valid JSON");
+        let book = parse_depth_json(BINANCE_JSON_3L).expect("valid JSON");
 
         assert_eq!(book.exchange, "binance");
         assert_eq!(book.bids.len(), 3);

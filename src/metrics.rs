@@ -474,4 +474,40 @@ mod tests {
         assert!(out.contains("labeled_bucket{exchange=\"test\",le=\"0.000001\"} 1"));
         assert!(out.contains("labeled_count{exchange=\"test\"} 1"));
     }
+
+    #[test]
+    fn to_prometheus_contains_all_metrics() {
+        let m = Metrics::register(&["binance", "bitstamp"]);
+        m.exchange("binance").messages.fetch_add(10, Relaxed);
+        m.exchange("bitstamp").connected.store(true, Relaxed);
+
+        let output = m.to_prometheus();
+
+        // All TYPE headers present.
+        for name in [
+            "orderbook_messages_total",
+            "orderbook_errors_total",
+            "orderbook_reconnections_total",
+            "orderbook_ring_drops_total",
+            "orderbook_merges_total",
+            "orderbook_exchange_up",
+            "orderbook_uptime_seconds",
+            "orderbook_decode_duration_seconds",
+            "orderbook_merge_duration_seconds",
+            "orderbook_e2e_duration_seconds",
+        ] {
+            assert!(
+                output.contains(&format!("# TYPE {name}")),
+                "missing TYPE header for {name}"
+            );
+        }
+
+        // Per-exchange labels present.
+        assert!(output.contains("exchange=\"binance\""));
+        assert!(output.contains("exchange=\"bitstamp\""));
+
+        // Verify recorded value shows up.
+        assert!(output.contains("orderbook_messages_total{exchange=\"binance\"} 10"));
+        assert!(output.contains("orderbook_exchange_up{exchange=\"bitstamp\"} 1"));
+    }
 }

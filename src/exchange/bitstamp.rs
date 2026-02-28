@@ -178,15 +178,12 @@ pub fn parse_order_book_json(json: &str) -> Option<OrderBook> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::BITSTAMP_JSON_3L;
     use crate::types::{FixedPoint, MAX_LEVELS};
-
-    /// Realistic Bitstamp `order_book` message (truncated to 3 levels per side).
-    /// Uses the real field order from `wss://ws.bitstamp.net`: "data" before "event".
-    const BITSTAMP_JSON: &str = r#"{"data":{"timestamp":"1700000000","microtimestamp":"1700000000000000","bids":[["0.06824000","12.50000000"],["0.06823000","8.30000000"],["0.06822000","5.00000000"]],"asks":[["0.06825000","10.00000000"],["0.06826000","7.20000000"],["0.06827000","3.50000000"]]},"channel":"order_book_ethbtc","event":"data"}"#;
 
     #[test]
     fn parse_bitstamp_data_message() {
-        let book = parse_order_book_json(BITSTAMP_JSON).expect("valid data message");
+        let book = parse_order_book_json(BITSTAMP_JSON_3L).expect("valid data message");
 
         assert_eq!(book.exchange, "bitstamp");
         assert_eq!(book.bids.len(), 3);
