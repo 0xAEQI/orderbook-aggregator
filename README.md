@@ -113,6 +113,7 @@ src/
   main.rs              Entry point -- thread spawning, signal handling, gRPC server
   lib.rs               Library root -- module declarations
   config.rs            CLI configuration (clap)
+  error.rs             Application error type (Bind, Spawn, Transport)
   types.rs             Core types: FixedPoint, Level, OrderBook, Summary
   json_walker.rs       Shared scanner utilities for zero-copy JSON parsing
   merger.rs            Busy-poll merger with k-way merge and stale eviction

@@ -4,6 +4,7 @@
 //! and streams the top-10 bid/ask levels with spread via gRPC.
 
 pub mod config;
+pub mod error;
 pub mod exchange;
 pub(crate) mod json_walker;
 pub mod merger;

@@ -7,6 +7,7 @@ use tonic::transport::Server;
 use tracing::{info, warn};
 
 use orderbook_aggregator::config::Config;
+use orderbook_aggregator::error::Error;
 use orderbook_aggregator::exchange::binance::BinanceHandler;
 use orderbook_aggregator::exchange::bitstamp::BitstampHandler;
 use orderbook_aggregator::exchange::wire_exchange;
@@ -23,7 +24,7 @@ use orderbook_aggregator::types::Summary;
 const RING_BUFFER_CAPACITY: usize = 4;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Error> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -43,8 +44,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Bind gRPC listener eagerly -- fail fast if port is taken, before spawning
     // exchange connections or background tasks.
-    let grpc_listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port)).await?;
-    let grpc_addr = grpc_listener.local_addr()?;
+    let grpc_listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port))
+        .await
+        .map_err(Error::Bind)?;
+    let grpc_addr = grpc_listener.local_addr().map_err(Error::Bind)?;
     info!(%grpc_addr, "gRPC server listening");
 
     let cancel = CancellationToken::new();
@@ -67,7 +70,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         RING_BUFFER_CAPACITY,
         metrics.exchange("binance"),
         cancel.clone(),
-    )?;
+    )
+    .map_err(Error::Spawn)?;
     consumers.push(c);
     threads.push(("binance", t));
 
@@ -77,7 +81,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         RING_BUFFER_CAPACITY,
         metrics.exchange("bitstamp"),
         cancel.clone(),
-    )?;
+    )
+    .map_err(Error::Spawn)?;
     consumers.push(c);
     threads.push(("bitstamp", t));
 
@@ -92,7 +97,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .name("merger".into())
             .spawn(move || {
                 merger::run_spsc(consumers, &summary_tx, &metrics, &cancel);
-            })?;
+            })
+            .map_err(Error::Spawn)?;
         threads.push(("merger", t));
     }
 
