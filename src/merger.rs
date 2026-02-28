@@ -40,6 +40,11 @@ const MAX_EXCHANGES: usize = 2;
 /// disconnect, not transient jitter.
 const STALE_THRESHOLD: Duration = Duration::from_secs(5);
 
+/// How often to run stale book eviction. Checked on the hot path but the actual
+/// eviction scan only runs when this interval has elapsed — avoids per-message
+/// overhead while still catching disconnected exchanges within ~1s.
+const EVICTION_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Latest book per exchange. Fixed-size array, linear scan -- no `HashMap`.
 pub struct BookStore {
     books: [Option<OrderBook>; MAX_EXCHANGES],
@@ -125,6 +130,7 @@ pub fn run_spsc(
     pin_to_last_core();
 
     let mut books = BookStore::new();
+    let mut last_eviction = Instant::now();
 
     info!(
         "merger started (SPSC busy-poll, {} consumers)",
@@ -146,7 +152,8 @@ pub fn run_spsc(
         // One merge + publish per input: every exchange update produces a new
         // merged summary on the gRPC stream. This ensures no updates are silently
         // collapsed and every book's E2E latency is individually recorded.
-        // Round-robin across consumers for fairness.
+        // Sequential scan across consumers -- for k=2, ordering bias is negligible
+        // and sequential access is more cache-friendly than true round-robin.
         let mut got_any = false;
         for consumer in &mut consumers {
             if let Ok(book) = consumer.pop() {
@@ -155,7 +162,12 @@ pub fn run_spsc(
                 books.insert(book);
 
                 let t0 = Instant::now();
-                books.evict_stale(t0, STALE_THRESHOLD);
+                // Periodic eviction: check ~1/sec instead of every pop.
+                // At ~20 pops/sec this avoids 19 redundant scans per second.
+                if t0 - last_eviction > EVICTION_INTERVAL {
+                    books.evict_stale(t0, STALE_THRESHOLD);
+                    last_eviction = t0;
+                }
                 let summary = merge(&books);
                 let t_after = Instant::now();
                 metrics.merge_latency.record(t_after - t0);
