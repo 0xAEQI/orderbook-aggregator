@@ -798,8 +798,7 @@
         "defaults": {},
         "overrides": []
       }
-    },
-
+    }
   ],
   "refresh": "5s",
   "schemaVersion": 39,
