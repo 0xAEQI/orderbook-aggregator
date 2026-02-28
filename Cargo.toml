@@ -2,6 +2,7 @@
 name = "orderbook-aggregator"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.91"
 description = "Real-time order book aggregator: merges Binance + Bitstamp depth and streams top-10 levels via gRPC"
 
 [lib]

@@ -106,11 +106,11 @@ impl FixedPoint {
     /// Create from f64 -- convenience for tests and cold-path construction.
     ///
     /// # Panics
-    /// Panics (debug) if `v` is negative.
+    /// Panics if `v` is negative.
     #[inline]
     #[must_use]
     pub fn from_f64(v: f64) -> Self {
-        debug_assert!(
+        assert!(
             v >= 0.0,
             "FixedPoint::from_f64 called with negative value: {v}"
         );
