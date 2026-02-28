@@ -1,2 +1,9 @@
 target/
 .git/
+.github/
+docs/
+monitoring/
+*.md
+.cargo/
+.dockerignore
+.gitignore

@@ -124,6 +124,14 @@ impl FixedPoint {
     pub fn raw(self) -> u64 {
         self.0
     }
+
+    /// Convert a raw spread value (`best_ask - best_bid` in 10⁻⁸ units) to `f64`.
+    /// Keeps the `FixedPoint` encoding internal -- callers never touch `SCALE`.
+    #[inline]
+    #[must_use]
+    pub fn spread_to_f64(raw: i64) -> f64 {
+        raw as f64 / Self::SCALE as f64
+    }
 }
 
 impl fmt::Display for FixedPoint {
