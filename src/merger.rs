@@ -10,8 +10,8 @@
 //! needed).
 //!
 //! Uses a k-way merge of pre-sorted exchange books: `O(DEPTH × k)` comparisons
-//! instead of `O(n log n)` concat+sort. For 2 exchanges × 10 levels → top 10,
-//! that's ~20 comparisons vs ~106.
+//! instead of `O(n log n)` concat+sort. For 2 exchanges × DEPTH levels → top
+//! DEPTH, that's ~20 comparisons vs ~106.
 
 use std::cmp::Ordering;
 use std::sync::atomic::Ordering::Relaxed;

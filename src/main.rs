@@ -1,7 +1,9 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
 use tokio::sync::watch;
+use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 use tracing::{info, warn};
@@ -136,10 +138,23 @@ async fn main() -> Result<(), Error> {
 
     // gRPC server on the pre-bound listener.
     let service = OrderbookService::new(summary_rx);
-    let incoming = tokio_stream::wrappers::TcpListenerStream::new(grpc_listener);
+
+    // TCP_NODELAY on every accepted gRPC connection. Without it, Nagle's
+    // algorithm batches small HTTP/2 frames — adding up to 40ms latency.
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(grpc_listener).map(|result| {
+        result.inspect(|stream| {
+            let _ = stream.set_nodelay(true);
+        })
+    });
 
     let server_cancel = cancel.clone();
     let server = Server::builder()
+        // HTTP/2 flow control: 1MB windows prevent backpressure stalls on burst traffic.
+        .initial_connection_window_size(1024 * 1024)
+        .initial_stream_window_size(1024 * 1024)
+        // Detect dead clients without waiting for TCP timeout.
+        .http2_keepalive_interval(Some(Duration::from_secs(10)))
+        .http2_keepalive_timeout(Some(Duration::from_secs(5)))
         .add_service(OrderbookAggregatorServer::new(service))
         .serve_with_incoming_shutdown(incoming, async move {
             server_cancel.cancelled().await;

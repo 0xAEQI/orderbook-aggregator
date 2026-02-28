@@ -11,7 +11,7 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use orderbook_aggregator::exchange::binance::parse_depth_json;
 use orderbook_aggregator::exchange::bitstamp::parse_order_book_json;
 use orderbook_aggregator::merger::{BookStore, merge};
-use orderbook_aggregator::types::{ExchangeId, FixedPoint, OrderBook, RawLevel};
+use orderbook_aggregator::types::{DEPTH, ExchangeId, FixedPoint, OrderBook, RawLevel};
 
 // ── JSON payloads ────────────────────────────────────────────────────────────
 
@@ -98,10 +98,10 @@ fn bench_fixed_parse(c: &mut Criterion) {
 }
 
 fn bench_merge(c: &mut Criterion) {
-    let book_a = make_book(0, 0.06824, 0.06825, 20);
-    let book_b = make_book(1, 0.06823, 0.06826, 20);
+    let book_a = make_book(0, 0.06824, 0.06825, DEPTH);
+    let book_b = make_book(1, 0.06823, 0.06826, DEPTH);
 
-    c.bench_function("merge_2x20", |b| {
+    c.bench_function("merge_2x10", |b| {
         b.iter_batched(
             || {
                 let mut store = BookStore::new();

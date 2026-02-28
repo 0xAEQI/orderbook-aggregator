@@ -56,7 +56,7 @@ Each exchange adapter has its own fused byte walker matching its specific wire f
 
 The level parser (`read_raw_levels`) uses a **compact JSON fast path**: all byte checks are direct (`expect_byte`) with no whitespace scanning. Exchange APIs always send compact arrays, so the ~160 `skip_ws()` calls per 20-level message are eliminated entirely.
 
-**Latency**: ~1.94μs per 20-level snapshot (Criterion median).
+**Latency**: ~660ns per 20-level snapshot (Criterion median, keeps top 10).
 
 ### Stage 3: SPSC Transfer
 
@@ -66,7 +66,7 @@ The parsed `OrderBook` (stack-allocated `ArrayVec<RawLevel, DEPTH>`) is pushed i
 
 The merger performs one merge-and-publish per input: every `pop()` from any consumer triggers a fresh merge with the latest data from all exchanges. This ensures no updates are silently collapsed and every book's end-to-end latency is individually recorded. `BookStore` uses direct array indexing (`exchange_id` IS the index) for O(1) insert -- no linear scan. The k-way merge uses stack-allocated cursors to interleave pre-sorted bid/ask arrays in O(DEPTH × k) comparisons (~20 for 2 exchanges). Merge latency is measured offline by Criterion benchmarks; only E2E latency is recorded on the hot path (saves 3 atomic ops per merge).
 
-**Latency**: ~245ns per merge (Criterion median).
+**Latency**: ~314ns per merge (Criterion median).
 
 ### Stage 5: Publish
 
@@ -76,14 +76,12 @@ The merged `Summary` is published via `tokio::watch` (latest-value semantics). `
 
 | Stage | Median | Notes |
 |-------|--------|-------|
-| WS frame → parse complete | 1.94 μs | Per-exchange SIMD walker + FixedPoint parse |
+| WS frame → parse complete | 660 ns | Per-exchange fused walker + FixedPoint parse |
 | SPSC push | ~10 ns | Single atomic store |
-| SPSC pop + merge | 245 ns | k-way merge, 2×20 → top 10 |
+| SPSC pop + merge | 314 ns | k-way merge, 2×10 → top 10 |
 | watch::send | ~50 ns | Atomic swap |
-| **Total hot path** | **~2.2 μs** | Parse + transfer + merge |
+| **Total hot path** | **~1.0 μs** | Parse + transfer + merge |
 | Protobuf encode (cold) | ~1 μs | Per-client, off merger thread |
-
-Production P50 (live exchange data, shared hardware): **~9μs**. P99: **~25μs**.
 
 ## Memory Layout
 

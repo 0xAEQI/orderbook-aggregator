@@ -184,7 +184,9 @@ impl<'a> Scanner<'a> {
         Some(FixedPoint::from_raw(value))
     }
 
-    /// Seek to a key pattern and read raw levels. Returns empty if key is absent.
+    /// Seek to a key pattern and read raw levels. Returns `Some(empty)` if the
+    /// key is absent (optional field), `None` if the key is present but the
+    /// level array is malformed.
     #[inline]
     pub(crate) fn read_optional_raw_levels<const N: usize>(
         &mut self,

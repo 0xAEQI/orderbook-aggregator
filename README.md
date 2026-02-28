@@ -4,7 +4,7 @@
 
 Real-time order book aggregator that connects to **Binance** and **Bitstamp** WebSocket feeds, merges their order books, and streams the top-10 bid/ask levels with spread via **gRPC**.
 
-Built for latency: **~9μs P50, ~25μs P99** end-to-end on shared hardware (WS frame received → merged summary published). Zero-allocation hot path, SIMD-accelerated JSON parsing, dedicated OS threads with core pinning, and a busy-poll merger.
+Built for latency: **~1μs** hot-path benchmark (parse + merge), zero-allocation pipeline. SIMD-accelerated JSON parsing, dedicated OS threads with core pinning, busy-poll merger, and TCP_NODELAY on gRPC egress.
 
 ![TUI Demo](docs/tui-demo.gif)
 
@@ -77,11 +77,9 @@ See [docs/MONITORING.md](docs/MONITORING.md) for the full metrics table and dash
 
 | Stage | Latency | Method |
 |-------|---------|--------|
-| JSON decode (20 levels) | 1.94 μs | Per-exchange SIMD byte walker (`memchr::memmem`) + `FixedPoint::parse` |
-| Merge (2×20 → top 10) | 245 ns | K-way merge with stack-allocated cursors |
-| E2E (parse + merge) | 3.72 μs | Criterion benchmark, synthetic data |
-| **Production E2E P50** | **~9 μs** | Live exchange data, shared hardware |
-| **Production E2E P99** | **~25 μs** | Live exchange data, shared hardware |
+| JSON decode (20 levels → top 10) | 660 ns | Per-exchange fused byte walker (`memchr::memmem`) + `FixedPoint` in single pass |
+| Merge (2×10 → top 10) | 314 ns | K-way merge with stack-allocated cursors |
+| E2E (parse + merge) | 1.65 μs | Criterion benchmark, synthetic data |
 
 See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for methodology, full results, and reproduction instructions.
 

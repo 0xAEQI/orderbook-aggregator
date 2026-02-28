@@ -14,62 +14,58 @@ Configured for stability: 200 samples, 10s measurement, 3s warmup, 3% noise thre
 
 | Benchmark | What it measures | Median | 95% CI |
 |-----------|-----------------|--------|--------|
-| `binance_decode_20` | Per-exchange SIMD byte walker + fixed-point for 20-level Binance depth snapshot | 1.94 μs | [1.88, 2.01] |
-| `bitstamp_decode_20` | Per-exchange SIMD byte walker + fixed-point for 20-level Bitstamp order book | 2.05 μs | [1.97, 2.13] |
-| `bitstamp_decode_100` | Same, but 100 levels (production Bitstamp payload) -- keeps 20, skips 80 | 2.16 μs | [2.10, 2.22] |
-| `fixed_point_parse` | Byte-scan decimal string to `FixedPoint(u64)` -- price + quantity pair | 13.3 ns | [13.0, 13.7] |
-| `merge_2x20` | K-way merge of 2×20 levels into top-10 output | 245 ns | [220, 274] |
-| `e2e_parse_merge` | Full pipeline: Binance 20 + Bitstamp 100 → decode → merge → Summary | **3.72 μs** | [3.58, 3.85] |
+| `binance_decode_20` | Fused byte walker + FixedPoint for 20-level Binance depth (keeps 10, skips 10) | 659 ns | [638, 682] |
+| `bitstamp_decode_20` | Fused byte walker + FixedPoint for 20-level Bitstamp order book (keeps 10, skips 10) | 656 ns | [636, 677] |
+| `bitstamp_decode_100` | Same, but 100 levels (production Bitstamp payload) -- keeps 10, skips 90 | 731 ns | [711, 753] |
+| `fixed_point_parse` | Byte-scan decimal string to `FixedPoint(u64)` -- price + quantity pair | 13.3 ns | [12.9, 13.6] |
+| `merge_2x10` | K-way merge of 2×10 levels into top-10 output | 314 ns | [304, 325] |
+| `e2e_parse_merge` | Full pipeline: Binance 20 + Bitstamp 100 → decode → merge → Summary | **1.65 μs** | [1.60, 1.70] |
 
 ## Analysis
 
 ### SIMD Skip Efficiency
 
-`bitstamp_decode_100` (2.16μs) is nearly identical to `bitstamp_decode_20` (2.05μs). The SIMD `memmem` search skips the 80 excess levels so fast that buffer size barely affects decode time. The walker reads the first 20 levels and bails out -- the subsequent `seek()` to `"asks":` jumps past the remaining data in a single vectorized scan.
+`bitstamp_decode_100` (731ns) is within 11% of `bitstamp_decode_20` (656ns). The SIMD `memmem` search skips the 90 excess levels so fast that buffer size barely affects decode time. The walker reads the first 10 levels and bails out -- the subsequent `seek()` to `"asks":` jumps past the remaining data in a single vectorized scan.
 
 ### Fixed-Point Parse Cost
 
-At 13.3ns per price+quantity pair, `FixedPoint::parse` adds ~266ns for a 20-level side (20 pairs). This is ~13% of the total decode time -- the rest is SIMD search and JSON structure navigation.
+At 13.3ns per price+quantity pair, `FixedPoint::parse` adds ~133ns for a 10-level side (10 pairs). This is ~20% of the total decode time -- the rest is SIMD search and JSON structure navigation.
 
 ### Merge Dominance
 
-The merge step (245ns) is roughly 8× cheaper than a single exchange decode. The hot path is dominated by JSON parsing, not merging. This validates the choice to optimize the parser (SIMD walker) rather than the merger algorithm.
+The merge step (314ns) is roughly 2× cheaper than a single exchange decode. The hot path is dominated by JSON parsing, not merging. This validates the choice to optimize the parser (SIMD walker) rather than the merger algorithm.
 
 ### Pipeline Breakdown
 
-The e2e benchmark (3.72μs) runs both decodes + merge sequentially in a single Criterion iteration. Individual benchmark medians don't sum to 3.72μs because each separate benchmark includes its own per-iteration overhead (function call setup, `black_box`, `Instant::now`). The e2e benchmark amortizes this overhead across the full pipeline:
+The e2e benchmark (1.65μs) runs both decodes + merge sequentially in a single Criterion iteration. Individual benchmark medians don't sum to 1.65μs because each separate benchmark includes its own per-iteration overhead (function call setup, `black_box`, `Instant::now`). The e2e benchmark amortizes this overhead across the full pipeline:
 
-- Binance 20-level decode: ~1.94μs
-- Bitstamp 100-level decode: ~2.16μs → keeps 20, skips 80
-- Merge 2×20 → top 10: ~0.25μs
-- BookStore insert (2×): ~0.02μs
+- Binance 20-level decode: ~659ns (keeps 10)
+- Bitstamp 100-level decode: ~731ns (keeps 10, skips 90)
+- Merge 2×10 → top 10: ~314ns
+- BookStore insert (2×): ~20ns
 
 ## Production Latency
 
-Live numbers from Prometheus histograms (`/metrics` endpoint), 8-minute run with live Binance + Bitstamp feeds on a shared Hetzner EX-44 (Intel i7-8700, no `isolcpus`, no Docker `cpuset`):
+Live numbers from Prometheus histograms (`/metrics` endpoint), 2-minute run with live Binance + Bitstamp feeds on a shared Hetzner EX-44 (Intel i7-8700, no `isolcpus`, no Docker `cpuset`):
 
-**Decode latency** (`orderbook_decode_duration_seconds`) — per-exchange SIMD walker + FixedPoint parse:
+**Decode latency** (`orderbook_decode_duration_seconds`) — per-exchange fused byte walker + FixedPoint parse:
 
 | Exchange | Samples | P50 | P99 | Mean |
 |----------|---------|-----|-----|------|
-| Binance | 2,159 | ~5 μs | ~15 μs | 5.6 μs |
-| Bitstamp | 1,716 | ~4 μs | ~15 μs | 5.2 μs |
+| Binance | 620 | ~3 μs | ~10 μs | 3.1 μs |
+| Bitstamp | 467 | ~3 μs | ~10 μs | 3.4 μs |
 
-**Merge latency** (`orderbook_merge_duration_seconds`) — evict_stale + k-way merge + watch publish:
-
-| Samples | P50 | P99 | Mean |
-|---------|-----|-----|------|
-| 3,875 | ~1 μs | ~5 μs | 1.2 μs |
+**Merge latency** — measured offline by Criterion benchmarks (`merge_2x10`): **314ns median**. Not recorded on the hot path; merge latency is stable enough that Criterion benchmarks suffice.
 
 **End-to-end latency** (`orderbook_e2e_duration_seconds`) — WS frame received → merged summary published:
 
 | Samples | P50 | P99 | Mean |
 |---------|-----|-----|------|
-| 3,875 | **~9 μs** | **~25 μs** | 10.2 μs |
+| 1,087 | **~8 μs** | **~20 μs** | 8.1 μs |
 
 Percentiles are interpolated from cumulative histogram buckets (16 logarithmic buckets from 100ns to 100ms). Zero errors, zero reconnections during the measurement window.
 
-The gap between benchmark e2e (3.72μs) and production P50 (~9μs) is accounted for by:
+The gap between benchmark e2e (1.65μs) and production P50 (~8μs) is accounted for by:
 1. WebSocket frame allocation (~1μs) — the `String` from tokio-tungstenite
 2. SPSC ring wait time (~1-3μs) — time between push and merger's next `pop()`
 3. Production merge overhead — `evict_stale()` + `Instant::now()` + metrics recording

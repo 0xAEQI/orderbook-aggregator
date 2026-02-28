@@ -1,6 +1,6 @@
 # Monitoring
 
-Grafana dashboard shows: exchange connectivity, messages/sec, errors/sec, decode/merge/e2e latency histograms (P50/P99/P99.9), uptime.
+Grafana dashboard shows: exchange connectivity, messages/sec, errors/sec, decode/e2e latency histograms (P50/P99/P99.9), uptime.
 
 ## Health and Metrics Endpoints
 
@@ -32,7 +32,6 @@ Dashboard config: `monitoring/grafana/dashboards/orderbook.json`
 | `orderbook_exchange_up{exchange}` | Gauge | Connection status (1=up) |
 | `orderbook_uptime_seconds` | Gauge | Process uptime |
 | `orderbook_decode_duration_seconds{exchange}` | Histogram | JSON decode latency |
-| `orderbook_merge_duration_seconds` | Histogram | Merge latency |
 | `orderbook_e2e_duration_seconds` | Histogram | End-to-end latency |
 
 ## Health Logic
