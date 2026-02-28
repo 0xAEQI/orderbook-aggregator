@@ -210,7 +210,7 @@ fn format_level<'a>(
     max_depth: f64,
 ) -> Line<'a> {
     let bar_len = if max_depth > 0.0 {
-        #[allow(clippy::cast_sign_loss)]
+        #[expect(clippy::cast_sign_loss)]
         {
             ((cumulative / max_depth) * BAR_WIDTH as f64).round() as usize
         }

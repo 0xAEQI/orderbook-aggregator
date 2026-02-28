@@ -26,8 +26,9 @@ use tracing::{debug, info, warn};
 use crate::metrics::Metrics;
 use crate::types::{Level, OrderBook, RawLevel, Summary, TOP_N};
 
-/// Number of exchanges (Binance + Bitstamp). Sizes stack-allocated arrays.
-const MAX_EXCHANGES: usize = 2;
+/// Derived from [`crate::EXCHANGES`]. Sizes stack-allocated arrays in
+/// `BookStore` and `merge_top_n`.
+const MAX_EXCHANGES: usize = crate::EXCHANGES.len();
 
 /// Books older than this are evicted before merging -- prevents stale data from
 /// one exchange contaminating the merged output after a disconnect. A crossed
@@ -39,11 +40,6 @@ const MAX_EXCHANGES: usize = 2;
 /// At Binance's 100ms update cadence, 5s ≈ 50 missed snapshots -- clearly a
 /// disconnect, not transient jitter.
 const STALE_THRESHOLD: Duration = Duration::from_secs(5);
-
-/// How often to run stale book eviction. Checked on the hot path but the actual
-/// eviction scan only runs when this interval has elapsed — avoids per-message
-/// overhead while still catching disconnected exchanges within ~1s.
-const EVICTION_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Latest book per exchange. Fixed-size array, linear scan -- no `HashMap`.
 pub struct BookStore {
@@ -60,7 +56,7 @@ impl Default for BookStore {
 
 impl BookStore {
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             books: [const { None }; MAX_EXCHANGES],
             names: [""; MAX_EXCHANGES],
@@ -127,10 +123,15 @@ pub fn run_spsc(
 ) {
     // Pin to the last available core -- isolates the merger from exchange threads
     // and tokio workers which naturally spread across the remaining cores.
+    assert!(
+        consumers.len() <= MAX_EXCHANGES,
+        "too many exchanges ({}) for MAX_EXCHANGES ({MAX_EXCHANGES})",
+        consumers.len(),
+    );
+
     pin_to_last_core();
 
     let mut books = BookStore::new();
-    let mut last_eviction = Instant::now();
 
     info!(
         "merger started (SPSC busy-poll, {} consumers)",
@@ -162,12 +163,7 @@ pub fn run_spsc(
                 books.insert(book);
 
                 let t0 = Instant::now();
-                // Periodic eviction: check ~1/sec instead of every pop.
-                // At ~20 pops/sec this avoids 19 redundant scans per second.
-                if t0 - last_eviction > EVICTION_INTERVAL {
-                    books.evict_stale(t0, STALE_THRESHOLD);
-                    last_eviction = t0;
-                }
+                books.evict_stale(t0, STALE_THRESHOLD);
                 let summary = merge(&books);
                 let t_after = Instant::now();
                 metrics.merge_latency.record(t_after - t0);
@@ -207,6 +203,7 @@ fn merge_top_n(
     n: usize,
 ) -> ArrayVec<Level, TOP_N> {
     let k = slices.len();
+    debug_assert!(k <= MAX_EXCHANGES);
     let mut cursors = [0usize; MAX_EXCHANGES];
     let mut result = ArrayVec::new();
 
@@ -277,7 +274,7 @@ pub fn merge(books: &BookStore) -> Summary {
 
     // Spread in raw FixedPoint units -- no f64 until proto conversion (cold path).
     let spread_raw = match (asks.first(), bids.first()) {
-        #[allow(clippy::cast_possible_wrap)] // Intentional: prices fit in i63.
+        #[expect(clippy::cast_possible_wrap)] // Intentional: prices fit in i63.
         (Some(ask), Some(bid)) => ask.price.raw() as i64 - bid.price.raw() as i64,
         _ => 0,
     };
@@ -298,13 +295,14 @@ pub fn merge(books: &BookStore) -> Summary {
 /// All `libc` calls are well-formed: `sysconf` with a valid constant,
 /// `CPU_SET` with a valid core index < CPU count, `sched_setaffinity` on
 /// the current thread (pid=0) with a properly zeroed `cpu_set_t`.
-#[allow(unsafe_code)]
+#[expect(unsafe_code)]
+#[cold]
 fn pin_to_last_core() {
     #[cfg(target_os = "linux")]
     {
         let cpus = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) };
         if cpus > 0 {
-            #[allow(clippy::cast_sign_loss)] // Guarded by cpus > 0 check above.
+            #[expect(clippy::cast_sign_loss)] // Guarded by cpus > 0 check above.
             let core = (cpus - 1) as usize;
             let mut set = unsafe { std::mem::zeroed::<libc::cpu_set_t>() };
             unsafe { libc::CPU_SET(core, &mut set) };
@@ -328,23 +326,8 @@ fn pin_to_last_core() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::{book, raw};
     use crate::types::FixedPoint;
-
-    fn raw(price: f64, amount: f64) -> RawLevel {
-        RawLevel {
-            price: FixedPoint::from_f64(price),
-            amount: FixedPoint::from_f64(amount),
-        }
-    }
-
-    fn book(exchange: &'static str, bids: &[RawLevel], asks: &[RawLevel]) -> OrderBook {
-        OrderBook {
-            exchange,
-            bids: bids.iter().copied().collect(),
-            asks: asks.iter().copied().collect(),
-            decode_start: Instant::now(),
-        }
-    }
 
     #[test]
     fn merge_two_exchanges() {
@@ -538,21 +521,22 @@ mod tests {
 
     #[test]
     fn bookstore_insert_overflow() {
+        const NAMES: [&str; 8] = ["a", "b", "c", "d", "e", "f", "g", "h"];
+
         let mut books = BookStore::new();
 
-        // MAX_EXCHANGES is 2 -- fill both slots.
-        books.insert(book("a", &[raw(100.0, 1.0)], &[]));
-        books.insert(book("b", &[raw(99.0, 1.0)], &[]));
-        // Third exchange should be silently dropped.
-        books.insert(book("c", &[raw(98.0, 1.0)], &[]));
+        // Fill all MAX_EXCHANGES slots.
+        for (i, &name) in NAMES[..MAX_EXCHANGES].iter().enumerate() {
+            books.insert(book(name, &[raw(100.0 - i as f64, 1.0)], &[]));
+        }
+
+        // Next insert should be silently dropped.
+        books.insert(book("overflow", &[raw(50.0, 1.0)], &[]));
 
         let summary = merge(&books);
-        // Only 2 levels (from a and b), not 3.
-        assert_eq!(summary.bids.len(), 2);
+        assert_eq!(summary.bids.len(), MAX_EXCHANGES);
         let exchanges: Vec<&str> = summary.bids.iter().map(|l| l.exchange).collect();
-        assert!(exchanges.contains(&"a"));
-        assert!(exchanges.contains(&"b"));
-        assert!(!exchanges.contains(&"c"));
+        assert!(!exchanges.contains(&"overflow"));
     }
 
     #[test]
@@ -568,5 +552,30 @@ mod tests {
         let summary = merge(&books);
         assert_eq!(summary.bids.len(), 2);
         assert_eq!(summary.asks.len(), 2);
+    }
+
+    #[test]
+    fn bookstore_reinsert_after_eviction() {
+        let mut books = BookStore::new();
+
+        // Insert a stale book.
+        let old_book = OrderBook {
+            exchange: "binance",
+            bids: [raw(100.0, 1.0)].into_iter().collect(),
+            asks: [raw(101.0, 1.0)].into_iter().collect(),
+            decode_start: Instant::now().checked_sub(Duration::from_secs(10)).unwrap(),
+        };
+        books.insert(old_book);
+
+        // Evict it.
+        books.evict_stale(Instant::now(), STALE_THRESHOLD);
+        let summary = merge(&books);
+        assert!(summary.bids.is_empty());
+
+        // Re-insert a fresh book for the same exchange.
+        books.insert(book("binance", &[raw(200.0, 5.0)], &[raw(201.0, 5.0)]));
+        let summary = merge(&books);
+        assert_eq!(summary.bids.len(), 1);
+        assert_eq!(summary.bids[0].price, FixedPoint::from_f64(200.0));
     }
 }

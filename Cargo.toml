@@ -24,7 +24,7 @@ prost = "0.13"
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 tokio-util = "0.7"
 tokio-stream = { version = "0.1", features = ["sync"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"

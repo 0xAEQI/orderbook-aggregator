@@ -21,15 +21,20 @@ fn validate_symbol(s: &str) -> Result<String, String> {
 )]
 pub struct Config {
     /// Trading pair symbol (e.g., ethbtc)
-    #[arg(short, long, default_value = "ethbtc", value_parser = validate_symbol)]
+    #[arg(short, long, default_value = "ethbtc", value_parser = validate_symbol, env = "ORDERBOOK_SYMBOL")]
     pub symbol: String,
 
     /// gRPC server port
-    #[arg(short, long, default_value = "50051")]
+    #[arg(short, long, default_value = "50051", env = "ORDERBOOK_PORT")]
     pub port: u16,
 
     /// Metrics/health HTTP port
-    #[arg(short = 'm', long, default_value = "9090")]
+    #[arg(
+        short = 'm',
+        long,
+        default_value = "9090",
+        env = "ORDERBOOK_METRICS_PORT"
+    )]
     pub metrics_port: u16,
 }
 

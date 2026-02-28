@@ -104,6 +104,10 @@ impl WsHandler for BitstampHandler {
         ))
     }
 
+    fn on_connected(&mut self) {
+        self.last_micro = 0;
+    }
+
     fn process_text(
         &mut self,
         text: &str,
@@ -114,7 +118,7 @@ impl WsHandler for BitstampHandler {
         let Some((event, micro, bids, asks)) = walk(text) else {
             metrics.errors.fetch_add(1, Relaxed);
             warn!(
-                exchange = "bitstamp",
+                exchange = Self::NAME,
                 payload_head = &text[..text.floor_char_boundary(200)],
                 "parse error"
             );
@@ -125,7 +129,7 @@ impl WsHandler for BitstampHandler {
                 // Stale/duplicate detection: microtimestamp should increase monotonically.
                 if micro > 0 && self.last_micro > 0 && micro <= self.last_micro {
                     warn!(
-                        exchange = "bitstamp",
+                        exchange = Self::NAME,
                         micro,
                         last_micro = self.last_micro,
                         "out-of-order update (stale or duplicate)"
@@ -135,9 +139,9 @@ impl WsHandler for BitstampHandler {
                 }
                 self.last_micro = micro;
 
-                let Some(book) = super::build_book("bitstamp", &bids, &asks, t0) else {
+                let Some(book) = super::build_book(Self::NAME, &bids, &asks, t0) else {
                     metrics.errors.fetch_add(1, Relaxed);
-                    warn!(exchange = "bitstamp", "malformed level");
+                    warn!(exchange = Self::NAME, "malformed level");
                     return HandleResult::Continue;
                 };
                 metrics.decode_latency.record(t0.elapsed());
@@ -147,12 +151,12 @@ impl WsHandler for BitstampHandler {
                 }
             }
             "bts:subscription_succeeded" => {
-                info!(exchange = "bitstamp", "subscription confirmed");
+                info!(exchange = Self::NAME, "subscription confirmed");
             }
             "bts:error" => {
                 metrics.errors.fetch_add(1, Relaxed);
                 let msg = extract_string(text, b"\"message\":").unwrap_or("unknown");
-                error!(exchange = "bitstamp", message = msg, "server error");
+                error!(exchange = Self::NAME, message = msg, "server error");
                 return HandleResult::Reconnect;
             }
             _ => {}

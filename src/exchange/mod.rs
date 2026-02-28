@@ -17,6 +17,7 @@
 pub mod binance;
 pub mod bitstamp;
 
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
@@ -45,7 +46,7 @@ const INITIAL_BACKOFF_MS: u64 = 1_000;
 pub enum HandleResult {
     /// Message processed, keep reading.
     Continue,
-    /// Protocol error, reconnect.
+    /// Server error or protocol violation -- reconnect.
     Reconnect,
     /// Consumer dropped or unrecoverable, stop entirely.
     Shutdown,
@@ -64,6 +65,10 @@ pub trait WsHandler: Send + 'static {
         let _ = symbol;
         None
     }
+
+    /// Called after a new WebSocket connection is established (before reading).
+    /// Use to reset sequence tracking state (e.g. `lastUpdateId`, `microtimestamp`).
+    fn on_connected(&mut self) {}
 
     /// Process a single `Message::Text` frame. Called on the hot path.
     fn process_text(
@@ -134,37 +139,39 @@ pub fn try_send_book(
     metrics: &ExchangeMetrics,
 ) -> bool {
     if producer.is_abandoned() {
-        tracing::warn!(exchange = metrics.name, "consumer dropped, stopping");
+        warn!(exchange = metrics.name, "consumer dropped, stopping");
         return false;
     }
     match producer.push(book) {
         Ok(()) => true,
         Err(rtrb::PushError::Full(_)) => {
             metrics.ring_drops.fetch_add(1, Relaxed);
-            tracing::warn!(exchange = metrics.name, "ring full, dropping snapshot");
+            warn!(exchange = metrics.name, "ring full, dropping snapshot");
             true
         }
     }
 }
 
-/// Exponential backoff with jitter. Returns `false` on cancellation.
+/// Exponential backoff with equal jitter. Returns `Break` on cancellation.
+///
+/// Equal jitter = `[backoff/2, backoff)` — decorrelates reconnection storms
+/// better than additive jitter (AWS architecture blog).
+#[cold]
 pub async fn backoff_sleep(
     backoff_ms: &mut u64,
     max_ms: u64,
     exchange: &'static str,
     cancel: &CancellationToken,
-) -> bool {
-    // Equal jitter: randomize between 50% and 100% of backoff. Decorrelates
-    // reconnection storms better than additive jitter (AWS architecture blog).
+) -> ControlFlow<()> {
     let half = *backoff_ms / 2;
     let delay = half + fastrand::u64(0..half.max(1));
-    tracing::warn!(exchange, delay_ms = delay, "reconnecting");
+    warn!(exchange, delay_ms = delay, "reconnecting");
     tokio::select! {
-        _ = cancel.cancelled() => return false,
+        _ = cancel.cancelled() => return ControlFlow::Break(()),
         _ = tokio::time::sleep(Duration::from_millis(delay)) => {}
     }
     *backoff_ms = (*backoff_ms * 2).min(max_ms);
-    true
+    ControlFlow::Continue(())
 }
 
 /// Shared reconnection loop for all exchange adapters. Handles connection,
@@ -187,7 +194,12 @@ pub async fn run_ws_loop<H: WsHandler>(
 
         info!(exchange = H::NAME, %url, "connecting");
 
-        let connect_fut = connect_async_tls_with_config(&url, Some(ws_config), true, None);
+        let connect_fut = connect_async_tls_with_config(
+            &url,
+            Some(ws_config),
+            /* disable_nagle */ true,
+            None,
+        );
         match tokio::time::timeout(CONNECT_TIMEOUT, connect_fut).await {
             Err(_) => {
                 metrics.errors.fetch_add(1, Relaxed);
@@ -197,6 +209,7 @@ pub async fn run_ws_loop<H: WsHandler>(
                 info!(exchange = H::NAME, "connected");
                 metrics.connected.store(true, Relaxed);
                 backoff_ms = INITIAL_BACKOFF_MS;
+                handler.on_connected();
 
                 let (mut write, mut read) = ws_stream.split();
 
@@ -212,7 +225,10 @@ pub async fn run_ws_loop<H: WsHandler>(
                         return;
                     }
                     metrics.reconnections.fetch_add(1, Relaxed);
-                    if !backoff_sleep(&mut backoff_ms, MAX_BACKOFF_MS, H::NAME, &cancel).await {
+                    if backoff_sleep(&mut backoff_ms, MAX_BACKOFF_MS, H::NAME, &cancel)
+                        .await
+                        .is_break()
+                    {
                         return;
                     }
                     continue;
@@ -261,15 +277,35 @@ pub async fn run_ws_loop<H: WsHandler>(
         }
 
         metrics.reconnections.fetch_add(1, Relaxed);
-        if !backoff_sleep(&mut backoff_ms, MAX_BACKOFF_MS, H::NAME, &cancel).await {
+        if backoff_sleep(&mut backoff_ms, MAX_BACKOFF_MS, H::NAME, &cancel)
+            .await
+            .is_break()
+        {
             return;
         }
     }
 }
 
+/// Create a SPSC ring buffer and spawn an exchange adapter on a dedicated OS
+/// thread. Returns the consumer half (for the merger) and the thread handle.
+///
+/// Encapsulates ring creation + thread spawn so adding a new exchange is a
+/// single call site.
+pub fn wire_exchange<H: WsHandler>(
+    handler: H,
+    symbol: String,
+    ring_capacity: usize,
+    metrics: Arc<ExchangeMetrics>,
+    cancel: CancellationToken,
+) -> std::io::Result<(rtrb::Consumer<OrderBook>, std::thread::JoinHandle<()>)> {
+    let (producer, consumer) = rtrb::RingBuffer::new(ring_capacity);
+    let handle = spawn_exchange(handler, symbol, producer, metrics, cancel)?;
+    Ok((consumer, handle))
+}
+
 /// Spawn an exchange adapter on a dedicated OS thread with its own single-threaded
 /// tokio runtime. Isolates WS I/O from the main runtime.
-pub fn spawn_exchange<H: WsHandler>(
+fn spawn_exchange<H: WsHandler>(
     handler: H,
     symbol: String,
     producer: Producer<OrderBook>,
@@ -292,48 +328,31 @@ mod tests {
     use std::sync::atomic::Ordering::Relaxed;
 
     use super::*;
-    use crate::types::{FixedPoint, RawLevel};
-
-    fn test_book(exchange: &'static str) -> OrderBook {
-        let mut bids = ArrayVec::new();
-        bids.push(RawLevel {
-            price: FixedPoint::from_f64(100.0),
-            amount: FixedPoint::from_f64(1.0),
-        });
-        let mut asks = ArrayVec::new();
-        asks.push(RawLevel {
-            price: FixedPoint::from_f64(101.0),
-            amount: FixedPoint::from_f64(1.0),
-        });
-        OrderBook {
-            exchange,
-            bids,
-            asks,
-            decode_start: Instant::now(),
-        }
-    }
-
-    fn test_metrics() -> ExchangeMetrics {
-        ExchangeMetrics::new("test")
-    }
+    use crate::testutil::{book, exchange_metrics, raw};
+    use crate::types::FixedPoint;
 
     #[test]
     fn try_send_ring_full_drops() {
         // 1-slot ring: push one to fill it, then push another -- should drop, not error.
         let (mut producer, _consumer) = rtrb::RingBuffer::new(1);
-        let m = test_metrics();
-        assert!(try_send_book(&mut producer, test_book("a"), &m));
+        let m = exchange_metrics("test");
+        let b = book("a", &[raw(100.0, 1.0)], &[raw(101.0, 1.0)]);
+        assert!(try_send_book(&mut producer, b.clone(), &m));
         // Ring is now full -- next push drops the book but returns true.
-        assert!(try_send_book(&mut producer, test_book("a"), &m));
+        assert!(try_send_book(&mut producer, b, &m));
         assert_eq!(m.ring_drops.load(Relaxed), 1);
     }
 
     #[test]
     fn try_send_abandoned_returns_false() {
         let (mut producer, consumer) = rtrb::RingBuffer::new(4);
-        let m = test_metrics();
+        let m = exchange_metrics("test");
         drop(consumer); // Abandon the consumer.
-        assert!(!try_send_book(&mut producer, test_book("a"), &m));
+        assert!(!try_send_book(
+            &mut producer,
+            book("a", &[raw(100.0, 1.0)], &[raw(101.0, 1.0)]),
+            &m
+        ));
     }
 
     #[test]
@@ -348,5 +367,31 @@ mod tests {
         assert_eq!(levels.len(), 2);
         assert_eq!(levels[0].price, FixedPoint::parse("100.0").unwrap());
         assert_eq!(levels[1].price, FixedPoint::parse("98.0").unwrap());
+    }
+
+    #[test]
+    fn parse_levels_malformed_price() {
+        let raw = [["not_a_number", "1.0"]];
+        assert!(parse_levels(&raw).is_none());
+    }
+
+    #[test]
+    fn parse_levels_malformed_amount() {
+        let raw = [["100.0", "xyz"]];
+        assert!(parse_levels(&raw).is_none());
+    }
+
+    #[test]
+    fn parse_levels_empty() {
+        let raw: &[[&str; 2]] = &[];
+        let levels = parse_levels(raw).unwrap();
+        assert!(levels.is_empty());
+    }
+
+    #[test]
+    fn build_book_returns_none_on_malformed() {
+        let bids = [["100.0", "1.0"]];
+        let asks = [["invalid", "1.0"]];
+        assert!(build_book("test", &bids, &asks, Instant::now()).is_none());
     }
 }

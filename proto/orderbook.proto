@@ -31,7 +31,9 @@ message Level {
   // Source exchange identifier (e.g., "binance", "bitstamp").
   string exchange = 1;
 
-  // Price as a double (converted from internal fixed-point representation).
+  // Price as a double (converted from internal fixed-point u64 representation).
+  // Precision loss is negligible for display; use string encoding if sub-penny
+  // fidelity is required.
   double price = 2;
 
   // Quantity available at this price level.

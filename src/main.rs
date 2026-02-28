@@ -4,12 +4,12 @@ use clap::Parser;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
-use tracing::info;
+use tracing::{info, warn};
 
 use orderbook_aggregator::config::Config;
 use orderbook_aggregator::exchange::binance::BinanceHandler;
 use orderbook_aggregator::exchange::bitstamp::BitstampHandler;
-use orderbook_aggregator::exchange::spawn_exchange;
+use orderbook_aggregator::exchange::wire_exchange;
 use orderbook_aggregator::merger;
 use orderbook_aggregator::metrics::{self, Metrics};
 use orderbook_aggregator::server::{
@@ -33,6 +33,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config::parse();
     info!(
+        version = env!("CARGO_PKG_VERSION"),
+        commit = env!("GIT_COMMIT"),
         symbol = %config.symbol,
         grpc_port = config.port,
         metrics_port = config.metrics_port,
@@ -47,54 +49,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cancel = CancellationToken::new();
 
-    // Register metrics -- adding a new exchange is a one-line change here.
-    let metrics = Arc::new(Metrics::register(&["binance", "bitstamp"]));
+    // --- Exchange wiring ---
+    // To add a new exchange: add its name to EXCHANGES in lib.rs, implement
+    // WsHandler, and add one wire_exchange call below.
+    let metrics = Arc::new(Metrics::register(orderbook_aggregator::EXCHANGES));
 
-    // SPSC ring buffers: one per exchange. Small ring -- only latest snapshot matters.
-    // Only store(Release) / load(Acquire) -- no CAS, no contention.
-    let (binance_prod, binance_cons) = rtrb::RingBuffer::new(RING_BUFFER_CAPACITY);
-    let (bitstamp_prod, bitstamp_cons) = rtrb::RingBuffer::new(RING_BUFFER_CAPACITY);
+    let num_exchanges = orderbook_aggregator::EXCHANGES.len();
+    let mut consumers = Vec::with_capacity(num_exchanges);
+    let mut threads: Vec<(&str, std::thread::JoinHandle<()>)> =
+        Vec::with_capacity(num_exchanges + 1);
+
+    // Each exchange gets its own SPSC ring + dedicated OS thread with a
+    // single-threaded tokio runtime. Isolates WS I/O from the main runtime.
+    let (c, t) = wire_exchange(
+        BinanceHandler::new(),
+        config.symbol.clone(),
+        RING_BUFFER_CAPACITY,
+        metrics.exchange("binance"),
+        cancel.clone(),
+    )?;
+    consumers.push(c);
+    threads.push(("binance", t));
+
+    let (c, t) = wire_exchange(
+        BitstampHandler::new(),
+        config.symbol.clone(),
+        RING_BUFFER_CAPACITY,
+        metrics.exchange("bitstamp"),
+        cancel.clone(),
+    )?;
+    consumers.push(c);
+    threads.push(("bitstamp", t));
 
     // Watch channel for merger → gRPC server (latest-value semantics).
     let (summary_tx, summary_rx) = watch::channel(Summary::default());
 
-    // --- Dedicated OS threads ---
-    // Each exchange gets its own OS thread with a single-threaded tokio runtime.
-    // Isolates WS I/O from the main runtime -- no work-stealing scheduler jitter.
-
-    let binance_thread = spawn_exchange(
-        BinanceHandler::new(),
-        config.symbol.clone(),
-        binance_prod,
-        metrics.exchange("binance"),
-        cancel.clone(),
-    )?;
-
-    let bitstamp_thread = spawn_exchange(
-        BitstampHandler::new(),
-        config.symbol.clone(),
-        bitstamp_prod,
-        metrics.exchange("bitstamp"),
-        cancel.clone(),
-    )?;
-
     // Merger on a dedicated OS thread -- plain spin-poll loop, no tokio runtime.
-    let merger_thread = {
+    {
         let metrics = metrics.clone();
         let cancel = cancel.clone();
-        std::thread::Builder::new()
+        let t = std::thread::Builder::new()
             .name("merger".into())
             .spawn(move || {
-                merger::run_spsc(
-                    vec![binance_cons, bitstamp_cons],
-                    &summary_tx,
-                    &metrics,
-                    &cancel,
-                );
-            })?
-    };
+                merger::run_spsc(consumers, &summary_tx, &metrics, &cancel);
+            })?;
+        threads.push(("merger", t));
+    }
 
-    info!("spawned dedicated OS threads: ws-binance, ws-bitstamp, merger");
+    info!(count = threads.len(), "spawned dedicated OS threads");
 
     // Shutdown signal handler (SIGINT + SIGTERM).
     let shutdown_cancel = cancel.clone();
@@ -143,15 +145,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wait for HTTP to finish.
     let _ = http_handle.await;
 
-    // Join OS threads (should already be exiting due to cancellation).
-    if binance_thread.join().is_err() {
-        tracing::warn!("binance thread panicked");
-    }
-    if bitstamp_thread.join().is_err() {
-        tracing::warn!("bitstamp thread panicked");
-    }
-    if merger_thread.join().is_err() {
-        tracing::warn!("merger thread panicked");
+    // Join all OS threads (should already be exiting due to cancellation).
+    for (name, thread) in threads {
+        if thread.join().is_err() {
+            warn!(name, "thread panicked");
+        }
     }
 
     info!("shutdown complete");

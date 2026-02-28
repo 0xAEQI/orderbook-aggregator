@@ -67,9 +67,9 @@ impl Default for PromHistogram {
 
 impl PromHistogram {
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
-            buckets: std::array::from_fn(|_| AtomicU64::new(0)),
+            buckets: [const { AtomicU64::new(0) }; NUM_BUCKETS + 1],
             sum_ns: AtomicU64::new(0),
             count: AtomicU64::new(0),
         }
@@ -93,7 +93,7 @@ impl PromHistogram {
         }
 
         self.buckets[idx].fetch_add(1, Relaxed);
-        self.sum_ns.fetch_add(nanos, Relaxed);
+        self.sum_ns.fetch_add(nanos, Relaxed); // Wraps after ~584 years. Fine.
         self.count.fetch_add(1, Relaxed);
     }
 

@@ -76,6 +76,10 @@ impl WsHandler for BinanceHandler {
         format!("wss://stream.binance.com:9443/ws/{symbol}@depth20@100ms")
     }
 
+    fn on_connected(&mut self) {
+        self.last_seq = 0;
+    }
+
     fn process_text(
         &mut self,
         text: &str,
@@ -86,7 +90,7 @@ impl WsHandler for BinanceHandler {
         let Some((seq, bids, asks)) = walk(text) else {
             metrics.errors.fetch_add(1, Relaxed);
             warn!(
-                exchange = "binance",
+                exchange = Self::NAME,
                 payload_head = &text[..text.floor_char_boundary(200)],
                 "parse error"
             );
@@ -96,7 +100,7 @@ impl WsHandler for BinanceHandler {
         // Stale/duplicate detection: lastUpdateId should increase monotonically.
         if seq > 0 && self.last_seq > 0 && seq <= self.last_seq {
             warn!(
-                exchange = "binance",
+                exchange = Self::NAME,
                 seq,
                 last_seq = self.last_seq,
                 "out-of-order update (stale or duplicate)"
@@ -106,9 +110,9 @@ impl WsHandler for BinanceHandler {
         }
         self.last_seq = seq;
 
-        let Some(book) = super::build_book("binance", &bids, &asks, t0) else {
+        let Some(book) = super::build_book(Self::NAME, &bids, &asks, t0) else {
             metrics.errors.fetch_add(1, Relaxed);
-            warn!(exchange = "binance", "malformed level");
+            warn!(exchange = Self::NAME, "malformed level");
             return HandleResult::Continue;
         };
         metrics.decode_latency.record(t0.elapsed());

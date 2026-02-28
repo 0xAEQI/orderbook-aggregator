@@ -86,7 +86,11 @@ impl<'a> Scanner<'a> {
                     self.pos += 1;
                     return Some(result);
                 }
-                b'\\' => self.pos += 2,
+                b'\\' => {
+                    // Skip escaped character. +2 is safe: if the backslash is
+                    // the last byte, the while condition exits on the next iteration.
+                    self.pos += 2;
+                }
                 _ => self.pos += 1,
             }
         }
@@ -161,7 +165,9 @@ pub(crate) fn read_levels<'a, const N: usize>(
         if !s.expect(b']') {
             return None;
         }
-        levels.push([price, qty]);
+        if levels.try_push([price, qty]).is_err() {
+            return Some(levels);
+        }
         s.skip_ws();
         match s.peek() {
             Some(b',') => {

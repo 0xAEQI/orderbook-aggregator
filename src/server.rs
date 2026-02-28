@@ -49,7 +49,8 @@ impl OrderbookAggregator for OrderbookService {
     }
 }
 
-/// `Summary` → proto. Heap allocation here, not in the merger.
+/// `Summary` → proto. Heap allocations (`String`, `Vec`) happen here on the
+/// per-client task, not in the merger's hot path.
 fn to_proto(summary: Summary) -> proto::Summary {
     let cvt = |l: crate::types::Level| proto::Level {
         exchange: l.exchange.to_string(),

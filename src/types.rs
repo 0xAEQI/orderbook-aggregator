@@ -61,6 +61,7 @@ impl FixedPoint {
             int_part = int_part.checked_mul(10)?.checked_add(u64::from(d))?;
             i += 1;
         }
+        let int_digits = i; // digits consumed before '.'
 
         let mut frac_part: u64 = 0;
         let mut frac_digits: u32 = 0;
@@ -82,6 +83,11 @@ impl FixedPoint {
                 }
                 i += 1;
             }
+        }
+
+        // Reject bare "." -- no integer or fractional digits consumed.
+        if int_digits == 0 && frac_digits == 0 {
+            return None;
         }
 
         frac_part *= POW10[(8 - frac_digits) as usize];
@@ -108,7 +114,7 @@ impl FixedPoint {
             v >= 0.0,
             "FixedPoint::from_f64 called with negative value: {v}"
         );
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        #[expect(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         Self((v * Self::SCALE as f64).round() as u64)
     }
 
@@ -136,6 +142,8 @@ pub struct RawLevel {
     pub amount: FixedPoint,
 }
 
+const _: () = assert!(size_of::<RawLevel>() == 16);
+
 /// A price level with exchange attribution. Used in merged [`Summary`] output
 /// where levels from different exchanges are interleaved (32 bytes, `Copy`).
 #[derive(Debug, Clone, Copy)]
@@ -144,6 +152,8 @@ pub struct Level {
     pub price: FixedPoint,
     pub amount: FixedPoint,
 }
+
+const _: () = assert!(size_of::<Level>() == 32);
 
 /// Single-exchange order book snapshot. Moved through the SPSC ring buffer.
 ///
@@ -260,13 +270,32 @@ mod tests {
 
     #[test]
     fn parse_dot_only() {
-        // "." -- no integer part, no fractional digits. Treated as 0.
-        assert_eq!(FixedPoint::parse(".").unwrap(), FixedPoint(0));
+        // "." -- no integer part, no fractional digits. Invalid.
+        assert!(FixedPoint::parse(".").is_none());
     }
 
     #[test]
     fn parse_leading_zeros() {
         let fp = FixedPoint::parse("00.1").unwrap();
         assert_eq!(fp.raw(), 10_000_000);
+    }
+
+    #[test]
+    fn parse_rejects_negative() {
+        // Negative input is not valid -- FixedPoint is unsigned.
+        assert!(FixedPoint::parse("-1.0").is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "negative value")]
+    fn from_f64_panics_on_negative_in_debug() {
+        let _ = FixedPoint::from_f64(-1.0);
+    }
+
+    #[test]
+    fn static_size_assertions() {
+        assert_eq!(size_of::<FixedPoint>(), 8);
+        assert_eq!(size_of::<RawLevel>(), 16);
+        assert_eq!(size_of::<Level>(), 32);
     }
 }
