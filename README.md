@@ -16,7 +16,7 @@ Built for latency: **~9μs P50, ~25μs P99** end-to-end on shared hardware (WS f
 | [Benchmarks](docs/BENCHMARKS.md) | Criterion results, production latency, hardware sensitivity, how to reproduce |
 | [Design Tradeoffs](docs/TRADEOFFS.md) | Every major decision with alternatives considered and rationale |
 | [Monitoring](docs/MONITORING.md) | Prometheus metrics, Grafana dashboard, health endpoint |
-| [Testing](docs/TESTING.md) | 55-test suite, coverage breakdown, CI |
+| [Testing](docs/TESTING.md) | 61-test suite, coverage breakdown, CI |
 
 ## Quick Start
 
@@ -92,15 +92,15 @@ See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for methodology, full results, and 
 - **SIMD JSON walker** -- `memchr::memmem` pattern search, zero-copy `&str` borrowing
 - **Fixed-point prices** -- `FixedPoint(u64)` with 10^8 scaling, integer `cmp` in merger
 - **Dedicated OS threads** -- no work-stealing jitter, no async overhead on merger
-- **Core pinning** -- merger auto-pins to last CPU core via `core_affinity`
+- **Core pinning** -- merger auto-pins to last CPU core via `libc::sched_setaffinity`
 
 See [docs/TRADEOFFS.md](docs/TRADEOFFS.md) for alternatives considered and full rationale.
 
 ## Testing
 
 ```bash
-cargo test     # 55 tests
-cargo clippy   # 0 warnings, unsafe_code = "forbid"
+cargo test     # 61 tests
+cargo clippy   # 0 warnings, unsafe_code = "deny" (expect-gated for core pinning)
 cargo bench    # Criterion benchmarks
 ```
 
@@ -119,7 +119,6 @@ src/
   metrics.rs           Lock-free Prometheus metrics and health endpoint
   server.rs            gRPC service (tonic) with protobuf conversion
   client.rs            Ratatui TUI client
-  error.rs             Error types (thiserror)
   exchange/
     mod.rs             WsHandler trait, shared reconnection loop, utilities
     binance.rs         Binance depth20@100ms SIMD byte walker + WebSocket adapter

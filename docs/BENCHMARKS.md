@@ -67,7 +67,7 @@ Live numbers from Prometheus histograms (`/metrics` endpoint), 8-minute run with
 |---------|-----|-----|------|
 | 3,875 | **~9 μs** | **~25 μs** | 10.2 μs |
 
-Percentiles are interpolated from cumulative histogram buckets (16 logarithmic buckets, 100ns–100ms). Zero errors, zero reconnections during the measurement window.
+Percentiles are interpolated from cumulative histogram buckets (16 logarithmic buckets from 100ns to 100ms). Zero errors, zero reconnections during the measurement window.
 
 The gap between benchmark e2e (3.72μs) and production P50 (~9μs) is accounted for by:
 1. WebSocket frame allocation (~1μs) — the `String` from tokio-tungstenite

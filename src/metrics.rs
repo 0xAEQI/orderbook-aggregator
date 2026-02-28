@@ -4,7 +4,7 @@
 //! Each exchange adapter receives its own `Arc<ExchangeMetrics>` at startup;
 //! adding a new exchange is a one-line change in `main.rs`, zero changes here.
 //!
-//! Histograms use 1-2-5 logarithmic buckets from 100ns to 100ms, covering
+//! Histograms use logarithmic buckets from 100ns to 100ms, covering
 //! both sub-microsecond decode/merge operations and tail-latency spikes from
 //! context switches, reconnection bursts, and channel backlog.
 
@@ -27,7 +27,7 @@ use tracing::info;
 const NUM_BUCKETS: usize = 16;
 
 /// Upper bounds in nanoseconds + Prometheus `le` label strings.
-/// 1-2-5 logarithmic progression from 100ns to 100ms -- covers both
+/// Logarithmic progression from 100ns to 100ms -- covers both
 /// sub-microsecond decode/merge and tail-latency spikes on e2e.
 const BUCKETS: [(u64, &str); NUM_BUCKETS] = [
     (100, "0.0000001"),    // 100ns

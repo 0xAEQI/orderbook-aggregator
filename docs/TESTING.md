@@ -3,18 +3,18 @@
 ## Running
 
 ```bash
-cargo test     # 55 tests
-cargo clippy   # 0 warnings, unsafe_code = "forbid"
+cargo test     # 61 tests
+cargo clippy   # 0 warnings, unsafe_code = "deny" (expect-gated for core pinning)
 cargo bench    # Criterion benchmarks (see BENCHMARKS.md)
 ```
 
 ## Coverage
 
-55 tests covering:
+61 tests covering:
 
 **Integration** -- end-to-end gRPC stream: mock exchange data through SPSC merger to gRPC client.
 
-**Merger** -- cross-exchange merging, single-exchange degraded mode, crossed book (negative spread), truncation to top-10, empty book handling, bid/ask tiebreaking by amount, k-way interleave correctness, stale book eviction.
+**Merger** -- cross-exchange merging, single-exchange degraded mode, crossed book (negative spread), truncation to top-10, empty book handling, bid/ask tiebreaking by amount, k-way interleave correctness, stale book eviction, asymmetric empty sides, single-side-only merge.
 
 **BookStore** -- insert-overwrites-existing, overflow beyond MAX_EXCHANGES silently dropped, evict_stale keeps fresh books.
 
@@ -22,7 +22,7 @@ cargo bench    # Criterion benchmarks (see BENCHMARKS.md)
 
 **Health endpoint** -- all-connected returns OK, partial returns DEGRADED, none returns DOWN (503).
 
-**Histogram** -- record + render produces correct cumulative bucket counts, sum, and count.
+**Histogram** -- record + render produces correct cumulative bucket counts, sum, and count. Exact bucket boundary placement, overflow into +Inf, label rendering.
 
 **FixedPoint** -- parse formats (integer, fractional, leading dot, trailing dot, dot-only, leading zeros, zero, truncation), rejection of invalid input and overflow, f64 roundtrip, ordering, display.
 

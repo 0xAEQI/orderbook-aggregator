@@ -35,7 +35,7 @@ The merger has no async code at all. It's a tight synchronous loop: `pop() → m
 
 ### Core Pinning
 
-The merger thread auto-pins to the last available CPU core at startup using `core_affinity`. Combined with Docker `cpuset`, this gives the merger a dedicated core with no contention from other threads:
+The merger thread auto-pins to the last available CPU core at startup using `libc::sched_setaffinity`. Combined with Docker `cpuset`, this gives the merger a dedicated core with no contention from other threads:
 
 ```yaml
 # docker-compose.yml
@@ -113,7 +113,7 @@ The only heap allocations are:
 
 Lock-free Prometheus metrics using `AtomicU64` counters and a custom histogram with O(1) `record()` (single `fetch_add` into the correct bucket). Cumulative sums for Prometheus exposition are computed lazily on the `/metrics` scrape path -- never on the hot path.
 
-16 logarithmic buckets from 100ns to 100ms cover the full latency range with sufficient granularity for P50/P99/P99.9 analysis.
+16 logarithmic buckets from 100ns to 100ms (1, 5, 10, 25, 50 progression per decade) cover the full latency range with sufficient granularity for P50/P99/P99.9 analysis.
 
 ## Data Integrity
 

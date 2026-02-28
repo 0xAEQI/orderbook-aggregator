@@ -18,7 +18,7 @@ path = "src/client.rs"
 required-features = ["client"]
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "signal", "time", "macros"] }
 tonic = "0.12"
 prost = "0.13"
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
