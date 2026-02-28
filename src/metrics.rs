@@ -395,33 +395,24 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn health_all_connected_ok() {
-        let metrics = Arc::new(Metrics::register(&["binance", "bitstamp"]));
-        metrics.exchange("binance").connected.store(true, Relaxed);
-        metrics.exchange("bitstamp").connected.store(true, Relaxed);
-
-        let (status, body) = health(State(metrics)).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, "OK\n");
-    }
-
-    #[tokio::test]
-    async fn health_partial_degraded() {
-        let metrics = Arc::new(Metrics::register(&["binance", "bitstamp"]));
-        metrics.exchange("binance").connected.store(true, Relaxed);
-
-        let (status, body) = health(State(metrics)).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, "DEGRADED\n");
-    }
-
-    #[tokio::test]
-    async fn health_none_down() {
-        let metrics = Arc::new(Metrics::register(&["binance", "bitstamp"]));
-
-        let (status, body) = health(State(metrics)).await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(body, "DOWN\n");
+    async fn health_status_by_connectivity() {
+        // (connected_flags, expected_status, expected_body)
+        let cases: &[(&[bool], StatusCode, &str)] = &[
+            (&[true, true], StatusCode::OK, "OK\n"),
+            (&[true, false], StatusCode::OK, "DEGRADED\n"),
+            (&[false, true], StatusCode::OK, "DEGRADED\n"),
+            (&[false, false], StatusCode::SERVICE_UNAVAILABLE, "DOWN\n"),
+        ];
+        let names = &["binance", "bitstamp"];
+        for &(flags, expected_status, expected_body) in cases {
+            let metrics = Arc::new(Metrics::register(names));
+            for (i, &name) in names.iter().enumerate() {
+                metrics.exchange(name).connected.store(flags[i], Relaxed);
+            }
+            let (status, body) = health(State(metrics)).await;
+            assert_eq!(status, expected_status, "flags: {flags:?}");
+            assert_eq!(body, expected_body, "flags: {flags:?}");
+        }
     }
 
     #[test]
@@ -449,5 +440,38 @@ mod tests {
 
         // Sum = 500 + 5000 + 5000 = 10500 ns = 0.0000105 s
         assert!(out.contains("test_hist_sum 0.0000105"));
+    }
+
+    #[test]
+    fn histogram_exact_bucket_boundary() {
+        let h = PromHistogram::new();
+        // Exactly 100ns lands IN the 100ns bucket (le comparison is <=).
+        h.record(Duration::from_nanos(100));
+        let mut out = String::new();
+        h.render("boundary", "", &mut out);
+        assert!(out.contains("boundary_bucket{le=\"0.0000001\"} 1"));
+        assert!(out.contains("boundary_count 1"));
+    }
+
+    #[test]
+    fn histogram_overflow_bucket() {
+        let h = PromHistogram::new();
+        // 200ms exceeds all defined buckets → lands in +Inf.
+        h.record(Duration::from_millis(200));
+        let mut out = String::new();
+        h.render("overflow", "", &mut out);
+        // Last named bucket should be 0.
+        assert!(out.contains("overflow_bucket{le=\"0.1\"} 0"));
+        assert!(out.contains("overflow_bucket{le=\"+Inf\"} 1"));
+    }
+
+    #[test]
+    fn histogram_render_with_labels() {
+        let h = PromHistogram::new();
+        h.record(Duration::from_micros(1));
+        let mut out = String::new();
+        h.render("labeled", "exchange=\"test\"", &mut out);
+        assert!(out.contains("labeled_bucket{exchange=\"test\",le=\"0.000001\"} 1"));
+        assert!(out.contains("labeled_count{exchange=\"test\"} 1"));
     }
 }

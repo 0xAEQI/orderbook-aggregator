@@ -182,41 +182,42 @@ pub struct Summary {
 mod tests {
     use super::*;
 
-    #[test]
-    fn parse_integer_only() {
-        assert_eq!(
-            FixedPoint::parse("123").unwrap().raw(),
-            123 * FixedPoint::SCALE
-        );
+    /// Generate a `#[test]` asserting `FixedPoint::parse(input).raw() == expected`.
+    macro_rules! test_parse {
+        ($name:ident, $input:expr, $expected:expr) => {
+            #[test]
+            fn $name() {
+                assert_eq!(FixedPoint::parse($input).unwrap().raw(), $expected);
+            }
+        };
     }
 
-    #[test]
-    fn parse_with_fractional() {
-        let fp = FixedPoint::parse("0.06824000").unwrap();
-        assert_eq!(fp.raw(), 6_824_000);
-    }
+    test_parse!(parse_integer_only, "123", 123 * FixedPoint::SCALE);
+    test_parse!(parse_with_fractional, "0.06824000", 6_824_000);
+    test_parse!(parse_short_fractional, "101.5", 101 * FixedPoint::SCALE + 50_000_000);
+    test_parse!(parse_leading_dot, ".5", 50_000_000);
+    test_parse!(parse_zero, "0", 0);
+    test_parse!(parse_trailing_dot, "0.", 0);
+    test_parse!(parse_leading_zeros, "00.1", 10_000_000);
+    test_parse!(parse_truncates_beyond_8, "0.068240001", 6_824_000);
+    test_parse!(parse_max_fractional, "0.99999999", 99_999_999);
+    test_parse!(parse_large_integer, "184467440737.0", 184_467_440_737 * FixedPoint::SCALE);
 
     #[test]
-    fn parse_short_fractional() {
-        let fp = FixedPoint::parse("101.5").unwrap();
-        assert_eq!(fp.raw(), 101 * FixedPoint::SCALE + 50_000_000);
-    }
-
-    #[test]
-    fn parse_leading_dot() {
-        let fp = FixedPoint::parse(".5").unwrap();
-        assert_eq!(fp.raw(), 50_000_000);
-    }
-
-    #[test]
-    fn parse_rejects_empty() {
-        assert!(FixedPoint::parse("").is_none());
-    }
-
-    #[test]
-    fn parse_rejects_non_digit() {
-        assert!(FixedPoint::parse("abc").is_none());
-        assert!(FixedPoint::parse("1.2x").is_none());
+    fn parse_rejects_invalid_inputs() {
+        let cases: &[(&str, &str)] = &[
+            ("", "empty"),
+            (".", "bare dot"),
+            ("abc", "non-digit"),
+            ("1.2x", "trailing non-digit"),
+            ("-1.0", "negative"),
+            ("999999999999999", "overflow"),
+            ("1.2.3", "double dot"),
+            (" 1", "leading space"),
+        ];
+        for &(input, label) in cases {
+            assert!(FixedPoint::parse(input).is_none(), "expected None for {label}: {input:?}");
+        }
     }
 
     #[test]
@@ -242,48 +243,6 @@ mod tests {
         let a = FixedPoint::parse("0.06824000").unwrap();
         let b = FixedPoint::parse("0.06825000").unwrap();
         assert!(a < b);
-    }
-
-    #[test]
-    fn parse_rejects_overflow() {
-        // u64::MAX / SCALE ≈ 184_467_440_737, so this overflows.
-        assert!(FixedPoint::parse("999999999999999").is_none());
-    }
-
-    #[test]
-    fn truncates_beyond_8_digits() {
-        // "0.068240001" → truncates to "0.06824000"
-        let fp = FixedPoint::parse("0.068240001").unwrap();
-        assert_eq!(fp.raw(), 6_824_000);
-    }
-
-    #[test]
-    fn parse_zero() {
-        assert_eq!(FixedPoint::parse("0").unwrap(), FixedPoint(0));
-    }
-
-    #[test]
-    fn parse_trailing_dot() {
-        // "0." -- integer part only, dot consumed but no fractional digits.
-        assert_eq!(FixedPoint::parse("0.").unwrap(), FixedPoint(0));
-    }
-
-    #[test]
-    fn parse_dot_only() {
-        // "." -- no integer part, no fractional digits. Invalid.
-        assert!(FixedPoint::parse(".").is_none());
-    }
-
-    #[test]
-    fn parse_leading_zeros() {
-        let fp = FixedPoint::parse("00.1").unwrap();
-        assert_eq!(fp.raw(), 10_000_000);
-    }
-
-    #[test]
-    fn parse_rejects_negative() {
-        // Negative input is not valid -- FixedPoint is unsigned.
-        assert!(FixedPoint::parse("-1.0").is_none());
     }
 
     #[test]

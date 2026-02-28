@@ -578,4 +578,34 @@ mod tests {
         assert_eq!(summary.bids.len(), 1);
         assert_eq!(summary.bids[0].price, FixedPoint::from_f64(200.0));
     }
+
+    #[test]
+    fn merge_asymmetric_empty_sides() {
+        let mut books = BookStore::new();
+
+        // Exchange A: bids only, no asks.
+        books.insert(book("a", &[raw(100.0, 1.0)], &[]));
+        // Exchange B: asks only, no bids.
+        books.insert(book("b", &[], &[raw(101.0, 1.0)]));
+
+        let summary = merge(&books);
+        assert_eq!(summary.bids.len(), 1);
+        assert_eq!(summary.asks.len(), 1);
+        // Spread still computed correctly from the only bid and only ask.
+        assert_eq!(summary.spread_raw, 100_000_000); // 101 - 100 = 1.0
+    }
+
+    #[test]
+    fn merge_single_side_only() {
+        let mut books = BookStore::new();
+
+        // Only bids, no asks from any exchange → spread = 0 (no ask).
+        books.insert(book("a", &[raw(100.0, 1.0), raw(99.0, 2.0)], &[]));
+        books.insert(book("b", &[raw(100.5, 3.0)], &[]));
+
+        let summary = merge(&books);
+        assert_eq!(summary.bids.len(), 3);
+        assert!(summary.asks.is_empty());
+        assert_eq!(summary.spread_raw, 0);
+    }
 }

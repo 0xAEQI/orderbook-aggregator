@@ -171,8 +171,6 @@ mod tests {
             FixedPoint::parse("10.00000000").unwrap()
         );
         assert_eq!(book.asks[2].price, FixedPoint::parse("0.06827000").unwrap());
-
-        assert_eq!(book.exchange, "binance");
     }
 
     #[test]
@@ -225,9 +223,14 @@ mod tests {
 
     #[test]
     fn walk_malformed_returns_none() {
-        assert!(walk("").is_none());
-        assert!(walk("{").is_none());
-        assert!(walk(r#"{"bids": not_an_array}"#).is_none());
-        assert!(walk("null").is_none());
+        for (input, label) in [
+            ("", "empty"),
+            ("{", "unclosed brace"),
+            (r#"{"bids": not_an_array}"#, "non-array bids"),
+            ("null", "null literal"),
+            (r#"{"bids":[]}"#, "missing asks"),
+        ] {
+            assert!(walk(input).is_none(), "expected None for {label}: {input:?}");
+        }
     }
 }

@@ -370,15 +370,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_levels_malformed_price() {
-        let raw = [["not_a_number", "1.0"]];
-        assert!(parse_levels(&raw).is_none());
-    }
-
-    #[test]
-    fn parse_levels_malformed_amount() {
-        let raw = [["100.0", "xyz"]];
-        assert!(parse_levels(&raw).is_none());
+    fn parse_levels_rejects_malformed() {
+        let cases: &[(&[[&str; 2]], &str)] = &[
+            (&[["not_a_number", "1.0"]], "bad price"),
+            (&[["100.0", "xyz"]], "bad amount"),
+            (&[["100.0", "1.0"], ["bad", "2.0"]], "bad second level"),
+        ];
+        for &(input, label) in cases {
+            assert!(parse_levels(input).is_none(), "expected None for {label}");
+        }
     }
 
     #[test]
@@ -390,6 +390,7 @@ mod tests {
 
     #[test]
     fn build_book_returns_none_on_malformed() {
+        // Valid bids + malformed asks → None (propagates parse failure).
         let bids = [["100.0", "1.0"]];
         let asks = [["invalid", "1.0"]];
         assert!(build_book("test", &bids, &asks, Instant::now()).is_none());

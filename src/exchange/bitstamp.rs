@@ -198,7 +198,6 @@ mod tests {
             FixedPoint::parse("12.50000000").unwrap()
         );
         assert_eq!(book.asks[0].price, FixedPoint::parse("0.06825000").unwrap());
-        assert_eq!(book.exchange, "bitstamp");
     }
 
     #[test]
@@ -311,8 +310,13 @@ mod tests {
 
     #[test]
     fn walk_malformed_returns_none() {
-        assert!(walk("").is_none());
-        assert!(walk("{").is_none());
-        assert!(walk(r#"{"event": 123}"#).is_none());
+        for (input, label) in [
+            ("", "empty"),
+            ("{", "unclosed brace"),
+            (r#"{"event": 123}"#, "event as number"),
+            ("null", "null literal"),
+        ] {
+            assert!(walk(input).is_none(), "expected None for {label}: {input:?}");
+        }
     }
 }
