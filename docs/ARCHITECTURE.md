@@ -74,14 +74,13 @@ The merged `Summary` is published via `tokio::watch` (latest-value semantics). `
 
 ### End-to-End Latency Budget
 
-| Stage | Median | Notes |
-|-------|--------|-------|
-| WS frame → parse complete | 660 ns | Per-exchange fused walker + FixedPoint parse |
-| Slot send | ~15 ns | Buffer write + atomic swap |
-| Slot recv + merge | 314 ns | k-way merge, 2×10 → top 10 |
-| watch::send | ~50 ns | Atomic swap |
-| **Total hot path** | **~1.0 μs** | Parse + transfer + merge |
-| Protobuf encode (cold) | ~1 μs | Per-client, off merger thread |
+| Stage | Median | Source |
+|-------|--------|--------|
+| WS frame → parse complete | 660 ns | Criterion (`binance_decode_20`) |
+| Merge (2×10 → top 10) | 314 ns | Criterion (`merge_2x10`) |
+| **E2E (parse + merge)** | **1.65 μs** | Criterion (`e2e_parse_merge`) |
+
+Slot send/recv and `watch::send` are single atomic operations (nanosecond-scale) -- not benchmarked individually because they're noise relative to parse and merge. Protobuf encode (~1μs) happens per-client on tokio worker threads, off the hot path.
 
 ## Memory Layout
 

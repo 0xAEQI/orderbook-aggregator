@@ -12,7 +12,7 @@ Every major design decision in this system, with alternatives considered and rat
 
 The triple-buffer protocol uses 3 pre-allocated inline buffers: the producer owns `back`, the consumer owns `front`, and `middle` is the atomic exchange point. Send writes to `back` then does a single `swap(Release)` to exchange `back ↔ middle`, setting a dirty flag. Recv checks the dirty flag with a `load(Relaxed)`, then `swap(Acquire)` to exchange `front ↔ middle`. Zero heap allocation per operation — all buffers are pre-allocated at construction. One atomic RMW per send, one per recv. No CAS loops, no mutex, no contention.
 
-Compared to `rtrb` (SPSC ring buffer): `rtrb` uses `store(Release)` for push (~3ns cheaper than our `swap`), but the consumer must drain-to-latest when multiple values are buffered (`while let Ok(book) = consumer.pop()` — 2-3 extra pops at ~10ns each). Our slot's recv is always a single operation regardless of how many sends occurred. Net pipeline latency is equivalent or better, with a simpler, more correct API.
+Compared to `rtrb` (SPSC ring buffer): `rtrb` uses `store(Release)` for push (cheaper than `swap`), but the consumer must drain-to-latest when multiple values are buffered (`while let Ok(book) = consumer.pop()`). Our slot's recv is always a single operation regardless of how many sends occurred. Both operations are nanosecond-scale and negligible relative to the decode (660ns) and merge (314ns) stages that dominate the hot path.
 
 Compared to `tokio::sync::mpsc`: adds wake-up notifications, semaphore management, and linked-list node allocation. For a pipeline where only the latest value matters, these costs are pure overhead.
 
