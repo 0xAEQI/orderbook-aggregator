@@ -20,11 +20,6 @@ use orderbook_aggregator::server::{
 };
 use orderbook_aggregator::types::Summary;
 
-/// Capacity of each per-exchange SPSC ring buffer. Small by design -- for order
-/// book data only the latest snapshot matters. A small ring ensures the merger
-/// processes fresh data after any delay, instead of draining dozens of stale ones.
-const RING_BUFFER_CAPACITY: usize = 4;
-
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     tracing_subscriber::fmt()
@@ -64,12 +59,11 @@ async fn main() -> Result<(), Error> {
     let mut threads: Vec<(&str, std::thread::JoinHandle<()>)> =
         Vec::with_capacity(num_exchanges + 1);
 
-    // Each exchange gets its own SPSC ring + dedicated OS thread with a
+    // Each exchange gets its own SPSC slot + dedicated OS thread with a
     // single-threaded tokio runtime. Isolates WS I/O from the main runtime.
     let (c, t) = wire_exchange(
         BinanceHandler::new(),
         config.symbol.clone(),
-        RING_BUFFER_CAPACITY,
         metrics.exchange("binance"),
         cancel.clone(),
     )
@@ -80,7 +74,6 @@ async fn main() -> Result<(), Error> {
     let (c, t) = wire_exchange(
         BitstampHandler::new(),
         config.symbol.clone(),
-        RING_BUFFER_CAPACITY,
         metrics.exchange("bitstamp"),
         cancel.clone(),
     )
@@ -98,7 +91,7 @@ async fn main() -> Result<(), Error> {
         let t = std::thread::Builder::new()
             .name("merger".into())
             .spawn(move || {
-                merger::run_spsc(consumers, &summary_tx, &metrics, &cancel);
+                merger::run_spsc(&consumers, &summary_tx, &metrics, &cancel);
             })
             .map_err(Error::Spawn)?;
         threads.push(("merger", t));

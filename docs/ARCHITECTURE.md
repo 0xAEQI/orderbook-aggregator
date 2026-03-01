@@ -4,17 +4,17 @@
 
 ```
 OS Thread "ws-binance"                  OS Thread "merger"
-┌─────────────────────┐                ┌──────────────────────┐
-│ current_thread      │   SPSC(4)     │ busy-poll (PAUSE)    │    Main Thread
-│ tokio runtime       │──rtrb::push──▶│ pop() both rings     │    ┌──────────┐
-│ WS → parse → push   │                │ merge → publish      │──▶│  tonic   │──▶ Client
+┌─────────────────────┐   atomic      ┌──────────────────────┐
+│ current_thread      │   slot        │ busy-poll (PAUSE)    │    Main Thread
+│ tokio runtime       │──send()───▶│ recv() both slots    │    ┌──────────┐
+│ WS → parse → send   │                │ merge → publish      │──▶│  tonic   │──▶ Client
 └─────────────────────┘                └──────────────────────┘    │  gRPC    │──▶ Client
                                                ▲    │watch       └──────────┘
 OS Thread "ws-bitstamp"                        │
-┌─────────────────────┐   SPSC(4)             │    ┌──────────────────────────────┐
-│ current_thread      │──rtrb::push────────────┘    │  HTTP :9090                  │
-│ tokio runtime       │                             │  GET /health → OK/DEGRADED   │
-│ WS → parse → push   │                             │  GET /metrics → Prometheus   │
+┌─────────────────────┐   atomic              │    ┌──────────────────────────────┐
+│ current_thread      │   slot                │    │  HTTP :9090                  │
+│ tokio runtime       │──send()────────────────┘    │  GET /health → OK/DEGRADED   │
+│ WS → parse → send   │                             │  GET /metrics → Prometheus   │
 └─────────────────────┘                             └──────────────────────────────┘
 ```
 
@@ -22,16 +22,16 @@ Four OS threads, each with a single responsibility:
 
 | Thread | Runtime | Role | Pinning |
 |--------|---------|------|---------|
-| `ws-binance` | `current_thread` tokio | WS receive → JSON parse → SPSC push | OS-scheduled |
-| `ws-bitstamp` | `current_thread` tokio | WS receive → JSON parse → SPSC push | OS-scheduled |
-| `merger` | None (plain thread) | SPSC pop → k-way merge → watch publish | Last CPU core |
+| `ws-binance` | `current_thread` tokio | WS receive → JSON parse → slot send | OS-scheduled |
+| `ws-bitstamp` | `current_thread` tokio | WS receive → JSON parse → slot send | OS-scheduled |
+| `merger` | None (plain thread) | Slot recv → k-way merge → watch publish | Last CPU core |
 | `main` | Multi-threaded tokio | gRPC serving, metrics HTTP, signal handling | OS-scheduled |
 
 ### Why Dedicated Threads
 
 The multi-threaded tokio runtime uses work-stealing -- tasks can migrate between worker threads at any `await` point. For latency-sensitive WS receive loops, this causes 5-20μs jitter from cache invalidation and scheduler overhead. By giving each exchange its own `current_thread` runtime on a dedicated OS thread, the WS read loop runs with no task migration, no work-stealing, and warm L1/L2 caches.
 
-The merger has no async code at all. It's a tight synchronous loop: `pop() → merge → publish → spin_loop()`. Running it on a plain OS thread avoids the overhead of async state machines and future polling entirely.
+The merger has no async code at all. It's a tight synchronous loop: `recv() → merge → publish → spin_loop()`. Running it on a plain OS thread avoids the overhead of async state machines and future polling entirely.
 
 ### Core Pinning
 
@@ -58,13 +58,13 @@ The level parser (`read_raw_levels`) uses a **compact JSON fast path**: all byte
 
 **Latency**: ~660ns per 20-level snapshot (Criterion median, keeps top 10).
 
-### Stage 3: SPSC Transfer
+### Stage 3: Atomic Slot Transfer
 
-The parsed `OrderBook` (stack-allocated `ArrayVec<RawLevel, DEPTH>`) is pushed into the per-exchange SPSC ring buffer. The push is a single `store(Release)` -- no CAS, no mutex, no contention. Ring capacity is 4 slots; if full, the stale snapshot is dropped (correct for order book data -- the next frame supersedes it).
+The parsed `OrderBook` (stack-allocated `ArrayVec<RawLevel, DEPTH>`) is written into the per-exchange atomic slot -- a hand-rolled triple-buffered SPSC channel with latest-value overwrite semantics. The send is a single buffer write + one atomic swap (`Release`). No CAS, no mutex, no contention, no heap allocation. Previous unread values are silently overwritten in-place (correct for order book data -- each snapshot supersedes the previous).
 
 ### Stage 4: Merge
 
-The merger performs one merge-and-publish per input: every `pop()` from any consumer triggers a fresh merge with the latest data from all exchanges. This ensures no updates are silently collapsed and every book's end-to-end latency is individually recorded. `BookStore` uses direct array indexing (`exchange_id` IS the index) for O(1) insert -- no linear scan. The k-way merge uses stack-allocated cursors to interleave pre-sorted bid/ask arrays in O(DEPTH × k) comparisons (~20 for 2 exchanges). Merge latency is measured offline by Criterion benchmarks; only E2E latency is recorded on the hot path (saves 3 atomic ops per merge).
+The merger performs one merge-and-publish per input: every `recv()` from any slot triggers a fresh merge with the latest data from all exchanges. With atomic slot semantics, `recv()` always returns the freshest snapshot or `None` -- no drain loop needed. This ensures every book's end-to-end latency is individually recorded. `BookStore` uses direct array indexing (`exchange_id` IS the index) for O(1) insert -- no linear scan. The k-way merge uses stack-allocated cursors to interleave pre-sorted bid/ask arrays in O(DEPTH × k) comparisons (~20 for 2 exchanges). Merge latency is measured offline by Criterion benchmarks; only E2E latency is recorded on the hot path (saves 3 atomic ops per merge).
 
 **Latency**: ~314ns per merge (Criterion median).
 
@@ -77,8 +77,8 @@ The merged `Summary` is published via `tokio::watch` (latest-value semantics). `
 | Stage | Median | Notes |
 |-------|--------|-------|
 | WS frame → parse complete | 660 ns | Per-exchange fused walker + FixedPoint parse |
-| SPSC push | ~10 ns | Single atomic store |
-| SPSC pop + merge | 314 ns | k-way merge, 2×10 → top 10 |
+| Slot send | ~15 ns | Buffer write + atomic swap |
+| Slot recv + merge | 314 ns | k-way merge, 2×10 → top 10 |
 | watch::send | ~50 ns | Atomic swap |
 | **Total hot path** | **~1.0 μs** | Parse + transfer + merge |
 | Protobuf encode (cold) | ~1 μs | Per-client, off merger thread |

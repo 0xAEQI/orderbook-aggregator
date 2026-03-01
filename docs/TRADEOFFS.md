@@ -2,17 +2,21 @@
 
 Every major design decision in this system, with alternatives considered and rationale.
 
-## SPSC Ring Buffers over `mpsc` Channels
+## Triple-Buffered Atomic Slot over Ring Buffers / `mpsc` Channels
 
-**Chose**: Per-exchange `rtrb` SPSC ring buffers (4 slots each).
+**Chose**: Hand-rolled triple-buffered SPSC slot (`atomic_slot`) with latest-value overwrite semantics.
 
-**Over**: `tokio::sync::mpsc`, `crossbeam::channel`, `flume`.
+**Over**: `rtrb` ring buffer, `tokio::sync::mpsc`, `crossbeam::channel`, `flume`.
 
-**Why**: SPSC ring buffers have the lowest possible synchronization overhead -- a single `store(Release)` for push, a single `load(Acquire)` for pop. No CAS loops, no mutex, no atomic read-modify-write. The tokio `mpsc` channel adds wake-up notifications, semaphore management, and linked-list node allocation. For a pipeline where only the latest value matters (order book snapshots), these costs are pure overhead.
+**Why**: Order book data is full-snapshot — each update supersedes all previous ones. The correct primitive is a **latest-value slot**, not a queue. A ring buffer or channel queues every value, requiring the consumer to drain-to-latest (wasting cycles on stale data). An atomic slot gives the consumer exactly what it needs: the freshest snapshot, always, in one operation.
 
-The ring is intentionally small (4 slots). For order book data, the latest snapshot supersedes all previous ones. A large ring would cause the merger to drain dozens of stale snapshots after any processing delay. With 4 slots, the merger always processes near-fresh data, and the producer simply drops on full (correct behavior for this data model).
+The triple-buffer protocol uses 3 pre-allocated inline buffers: the producer owns `back`, the consumer owns `front`, and `middle` is the atomic exchange point. Send writes to `back` then does a single `swap(Release)` to exchange `back ↔ middle`, setting a dirty flag. Recv checks the dirty flag with a `load(Relaxed)`, then `swap(Acquire)` to exchange `front ↔ middle`. Zero heap allocation per operation — all buffers are pre-allocated at construction. One atomic RMW per send, one per recv. No CAS loops, no mutex, no contention.
 
-**Tradeoff**: One ring per exchange (not shared). Acceptable for 2 exchanges. Would need rethinking for dozens.
+Compared to `rtrb` (SPSC ring buffer): `rtrb` uses `store(Release)` for push (~3ns cheaper than our `swap`), but the consumer must drain-to-latest when multiple values are buffered (`while let Ok(book) = consumer.pop()` — 2-3 extra pops at ~10ns each). Our slot's recv is always a single operation regardless of how many sends occurred. Net pipeline latency is equivalent or better, with a simpler, more correct API.
+
+Compared to `tokio::sync::mpsc`: adds wake-up notifications, semaphore management, and linked-list node allocation. For a pipeline where only the latest value matters, these costs are pure overhead.
+
+**Tradeoff**: One slot per exchange (not shared). Acceptable for 2 exchanges. Would need rethinking for dozens. The `unsafe` code is contained within `atomic_slot.rs` with `#[expect(unsafe_code)]` annotations — the rest of the crate uses `#![deny(unsafe_code)]`.
 
 ## Busy-Poll Merger over Async/Epoll
 

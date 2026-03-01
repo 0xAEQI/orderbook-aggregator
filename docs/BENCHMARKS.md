@@ -67,7 +67,7 @@ Percentiles are interpolated from cumulative histogram buckets (16 logarithmic b
 
 The gap between benchmark e2e (1.65μs) and production P50 (~8μs) is accounted for by:
 1. WebSocket frame allocation (~1μs) — the `String` from tokio-tungstenite
-2. SPSC ring wait time (~1-3μs) — time between push and merger's next `pop()`
+2. Atomic slot wait time (~1-3μs) — time between send and merger's next `recv()`
 3. Production merge overhead — `evict_stale()` + `Instant::now()` + metrics recording
 4. Shared-server noise — no core isolation, no `isolcpus`, CPU shared with other processes
 

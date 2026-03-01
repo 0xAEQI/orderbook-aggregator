@@ -16,7 +16,7 @@ Built for latency: **~1μs** hot-path benchmark (parse + merge), zero-allocation
 | [Benchmarks](docs/BENCHMARKS.md) | Criterion results, production latency, hardware sensitivity, how to reproduce |
 | [Design Tradeoffs](docs/TRADEOFFS.md) | Every major decision with alternatives considered and rationale |
 | [Monitoring](docs/MONITORING.md) | Prometheus metrics, Grafana dashboard, health endpoint |
-| [Testing](docs/TESTING.md) | 75-test suite, coverage breakdown, CI |
+| [Testing](docs/TESTING.md) | 82-test suite, coverage breakdown, CI |
 
 ## Quick Start
 
@@ -85,7 +85,7 @@ See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for methodology, full results, and 
 
 ## Key Design Choices
 
-- **SPSC ring buffers** -- `store(Release)` / `load(Acquire)` only, no CAS, no contention
+- **Triple-buffered atomic slot** -- zero-allocation SPSC with latest-value overwrite, one atomic swap per send/recv
 - **Busy-poll merger** -- `core::hint::spin_loop()` (PAUSE), sub-microsecond wake-up
 - **SIMD JSON walker** -- `memchr::memmem` pattern search, zero-copy `&str` borrowing
 - **Fixed-point prices** -- `FixedPoint(u64)` with 10^8 scaling, integer `cmp` in merger
@@ -97,8 +97,8 @@ See [docs/TRADEOFFS.md](docs/TRADEOFFS.md) for alternatives considered and full 
 ## Testing
 
 ```bash
-cargo test     # 75 tests
-cargo clippy   # 0 warnings, unsafe_code = "deny" (expect-gated for core pinning)
+cargo test     # 82 tests
+cargo clippy   # 0 warnings, unsafe_code = "deny" (expect-gated for core pinning + atomic_slot)
 cargo bench    # Criterion benchmarks
 ```
 
@@ -111,6 +111,7 @@ src/
   main.rs              Entry point -- thread spawning, signal handling, gRPC server
   lib.rs               Library root -- module declarations
   config.rs            CLI configuration (clap)
+  atomic_slot.rs       Triple-buffered SPSC slot (zero-allocation, latest-value overwrite)
   error.rs             Application error type (Bind, Spawn, Transport)
   types.rs             Core types: FixedPoint, Level, OrderBook, Summary
   json_walker.rs       Shared scanner utilities for zero-copy JSON parsing
@@ -129,7 +130,7 @@ proto/
 benches/
   hot_path.rs          Criterion micro-benchmarks for decode, merge, and E2E pipeline
 tests/
-  integration.rs       E2E test: mock data → SPSC → merger → gRPC server → client
+  integration.rs       E2E test: mock data → atomic slot → merger → gRPC server → client
 docs/
   ARCHITECTURE.md      Thread model, data flow, latency budget
   BENCHMARKS.md        Criterion results, production latency, reproduction

@@ -1,8 +1,8 @@
 //! Binance partial book depth WebSocket adapter.
 //!
 //! Runs on a dedicated OS thread with its own `current_thread` tokio runtime.
-//! Pushes parsed [`OrderBook`] snapshots into an SPSC ring buffer -- the push
-//! is a single `store(Release)`, no CAS.
+//! Pushes parsed [`OrderBook`] snapshots into an SPSC slot -- the send is a
+//! single atomic swap, the previous value is silently overwritten.
 
 use std::sync::OnceLock;
 use std::sync::atomic::Ordering::Relaxed;
@@ -10,12 +10,12 @@ use std::time::Instant;
 
 use arrayvec::ArrayVec;
 use memchr::memmem;
-use rtrb::Producer;
 use tracing::warn;
 
 use crate::BINANCE_ID;
 use crate::json_walker::{Scanner, read_raw_levels};
 use crate::metrics::ExchangeMetrics;
+use crate::atomic_slot::SlotSender;
 use crate::types::{DEPTH, OrderBook, RawLevel};
 
 use super::{HandleResult, WsHandler};
@@ -86,7 +86,7 @@ impl WsHandler for BinanceHandler {
     fn process_text(
         &mut self,
         text: &str,
-        producer: &mut Producer<OrderBook>,
+        sender: &SlotSender<OrderBook>,
         metrics: &ExchangeMetrics,
     ) -> HandleResult {
         let t0 = Instant::now();
@@ -121,7 +121,7 @@ impl WsHandler for BinanceHandler {
         };
         metrics.decode_latency.record(t0.elapsed());
         metrics.messages.fetch_add(1, Relaxed);
-        if !super::try_send_book(producer, book, metrics) {
+        if !super::try_send_book(sender, book, metrics) {
             return HandleResult::Shutdown;
         }
         HandleResult::Continue

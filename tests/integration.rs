@@ -14,6 +14,7 @@ use orderbook_aggregator::metrics::Metrics;
 use orderbook_aggregator::server::proto::orderbook_aggregator_client::OrderbookAggregatorClient;
 use orderbook_aggregator::server::proto::orderbook_aggregator_server::OrderbookAggregatorServer;
 use orderbook_aggregator::server::{OrderbookService, proto};
+use orderbook_aggregator::atomic_slot::{self, SlotSender};
 use orderbook_aggregator::types::{ExchangeId, FixedPoint, OrderBook, RawLevel, Summary};
 
 // ---------------------------------------------------------------------------
@@ -40,8 +41,8 @@ fn make_book(exchange_id: ExchangeId, bid_price: f64, ask_price: f64) -> OrderBo
 }
 
 struct TestHarness {
-    prod_a: rtrb::Producer<OrderBook>,
-    prod_b: rtrb::Producer<OrderBook>,
+    sender_a: SlotSender<OrderBook>,
+    sender_b: SlotSender<OrderBook>,
     stream: tonic::Streaming<proto::Summary>,
     cancel: CancellationToken,
     merger_thread: Option<std::thread::JoinHandle<()>>,
@@ -49,8 +50,8 @@ struct TestHarness {
 
 impl TestHarness {
     async fn new() -> Self {
-        let (prod_a, cons_a) = rtrb::RingBuffer::new(16);
-        let (prod_b, cons_b) = rtrb::RingBuffer::new(16);
+        let (sender_a, receiver_a) = atomic_slot::slot();
+        let (sender_b, receiver_b) = atomic_slot::slot();
         let (summary_tx, summary_rx) = watch::channel(Summary::default());
         let cancel = CancellationToken::new();
         let metrics = Arc::new(Metrics::register(&["test_a", "test_b"]));
@@ -61,8 +62,9 @@ impl TestHarness {
         let merger_thread = std::thread::Builder::new()
             .name("test-merger".into())
             .spawn(move || {
+                let receivers = vec![receiver_a, receiver_b];
                 merger::run_spsc(
-                    vec![cons_a, cons_b],
+                    &receivers,
                     &summary_tx,
                     &merger_metrics,
                     &merger_cancel,
@@ -110,8 +112,8 @@ impl TestHarness {
             .into_inner();
 
         Self {
-            prod_a,
-            prod_b,
+            sender_a,
+            sender_b,
             stream,
             cancel,
             merger_thread: Some(merger_thread),
@@ -148,48 +150,44 @@ impl Drop for TestHarness {
 // Tests
 // ---------------------------------------------------------------------------
 
-/// End-to-end: mock exchange data → SPSC → merger → gRPC server → gRPC client.
+/// End-to-end: mock exchange data → SPSC slot → merger → gRPC server → gRPC client.
 #[tokio::test]
 async fn grpc_streams_merged_summary() {
     let mut h = TestHarness::new().await;
 
-    h.prod_a
-        .push(OrderBook {
-            exchange_id: 0,
-            bids: [RawLevel {
-                price: FixedPoint::from_f64(100.0),
-                amount: FixedPoint::from_f64(5.0),
-            }]
-            .into_iter()
-            .collect(),
-            asks: [RawLevel {
-                price: FixedPoint::from_f64(101.0),
-                amount: FixedPoint::from_f64(3.0),
-            }]
-            .into_iter()
-            .collect(),
-            decode_start: Instant::now(),
-        })
-        .expect("push test_a");
+    h.sender_a.send(OrderBook {
+        exchange_id: 0,
+        bids: [RawLevel {
+            price: FixedPoint::from_f64(100.0),
+            amount: FixedPoint::from_f64(5.0),
+        }]
+        .into_iter()
+        .collect(),
+        asks: [RawLevel {
+            price: FixedPoint::from_f64(101.0),
+            amount: FixedPoint::from_f64(3.0),
+        }]
+        .into_iter()
+        .collect(),
+        decode_start: Instant::now(),
+    });
 
-    h.prod_b
-        .push(OrderBook {
-            exchange_id: 1,
-            bids: [RawLevel {
-                price: FixedPoint::from_f64(100.5),
-                amount: FixedPoint::from_f64(2.0),
-            }]
-            .into_iter()
-            .collect(),
-            asks: [RawLevel {
-                price: FixedPoint::from_f64(100.8),
-                amount: FixedPoint::from_f64(4.0),
-            }]
-            .into_iter()
-            .collect(),
-            decode_start: Instant::now(),
-        })
-        .expect("push test_b");
+    h.sender_b.send(OrderBook {
+        exchange_id: 1,
+        bids: [RawLevel {
+            price: FixedPoint::from_f64(100.5),
+            amount: FixedPoint::from_f64(2.0),
+        }]
+        .into_iter()
+        .collect(),
+        asks: [RawLevel {
+            price: FixedPoint::from_f64(100.8),
+            amount: FixedPoint::from_f64(4.0),
+        }]
+        .into_iter()
+        .collect(),
+        decode_start: Instant::now(),
+    });
 
     let summary = h.recv_merged(2, 2).await;
 
@@ -214,20 +212,14 @@ async fn grpc_streams_updated_book() {
     let mut h = TestHarness::new().await;
 
     // Initial push from both exchanges.
-    h.prod_a
-        .push(make_book(0, 100.0, 101.0))
-        .expect("push test_a initial");
-    h.prod_b
-        .push(make_book(1, 100.5, 100.8))
-        .expect("push test_b");
+    h.sender_a.send(make_book(0, 100.0, 101.0));
+    h.sender_b.send(make_book(1, 100.5, 100.8));
 
     let s1 = h.recv_merged(2, 2).await;
     assert_eq!(s1.bids[0].price, 100.5);
 
     // Updated push from A with a better bid than B.
-    h.prod_a
-        .push(make_book(0, 200.0, 201.0))
-        .expect("push test_a updated");
+    h.sender_a.send(make_book(0, 200.0, 201.0));
 
     // Wait for the updated summary where best bid is now exchange 0 at 200.0.
     let s2 = tokio::time::timeout(Duration::from_secs(2), async {
@@ -253,9 +245,7 @@ async fn grpc_streams_single_exchange() {
     let mut h = TestHarness::new().await;
 
     // Only push from exchange A.
-    h.prod_a
-        .push(make_book(0, 50.0, 51.0))
-        .expect("push test_a only");
+    h.sender_a.send(make_book(0, 50.0, 51.0));
 
     let summary = h.recv_merged(1, 1).await;
 

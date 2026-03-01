@@ -14,12 +14,12 @@ use std::time::Instant;
 
 use arrayvec::ArrayVec;
 use memchr::memmem;
-use rtrb::Producer;
 use tracing::{error, info, warn};
 
 use crate::BITSTAMP_ID;
 use crate::json_walker::{Scanner, extract_string};
 use crate::metrics::ExchangeMetrics;
+use crate::atomic_slot::SlotSender;
 use crate::types::{DEPTH, OrderBook, RawLevel};
 
 use super::{HandleResult, WsHandler};
@@ -129,7 +129,7 @@ impl WsHandler for BitstampHandler {
     fn process_text(
         &mut self,
         text: &str,
-        producer: &mut Producer<OrderBook>,
+        sender: &SlotSender<OrderBook>,
         metrics: &ExchangeMetrics,
     ) -> HandleResult {
         let t0 = Instant::now();
@@ -165,7 +165,7 @@ impl WsHandler for BitstampHandler {
                 };
                 metrics.decode_latency.record(t0.elapsed());
                 metrics.messages.fetch_add(1, Relaxed);
-                if !super::try_send_book(producer, book, metrics) {
+                if !super::try_send_book(sender, book, metrics) {
                     return HandleResult::Shutdown;
                 }
             }

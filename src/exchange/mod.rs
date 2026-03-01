@@ -6,9 +6,11 @@
 //! (not incremental diffs), so no local order book maintenance or sequence
 //! reconciliation is required.
 //!
-//! Adapters push [`OrderBook`] snapshots into a per-exchange **SPSC ring buffer**
-//! (`rtrb`). The ring uses only `store(Release)` / `load(Acquire)` -- no CAS,
-//! no contention with the merger thread.
+//! Adapters push [`OrderBook`] snapshots into a per-exchange **SPSC slot**
+//! (`atomic_slot`). The slot uses a single atomic swap per operation -- the
+//! producer always overwrites the latest value, the consumer always gets the
+//! freshest snapshot. Stale intermediates are silently dropped (correct for
+//! full-snapshot order book data where each update supersedes the previous).
 //!
 //! Connections use `write_buffer_size: 0` for immediate frame flushing.
 //! `TCP_NODELAY` is enabled via `connect_async_tls_with_config`'s
@@ -23,13 +25,13 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use rtrb::Producer;
 use tokio_tungstenite::connect_async_tls_with_config;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::metrics::ExchangeMetrics;
+use crate::atomic_slot::{SlotReceiver, SlotSender};
 use crate::types::OrderBook;
 
 /// Connection timeout for WebSocket handshake.
@@ -73,7 +75,7 @@ pub trait WsHandler: Send + 'static {
     fn process_text(
         &mut self,
         text: &str,
-        producer: &mut Producer<OrderBook>,
+        sender: &SlotSender<OrderBook>,
         metrics: &ExchangeMetrics,
     ) -> HandleResult;
 }
@@ -87,26 +89,20 @@ pub fn ws_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig 
     }
 }
 
-/// Push book into SPSC ring. Drops on full (stale data is correct to drop for
-/// order books -- next snapshot supersedes). Returns `false` if consumer dropped.
+/// Send book into SPSC slot. Always succeeds (overwrites previous value).
+/// Returns `false` if consumer dropped.
 #[inline]
 pub fn try_send_book(
-    producer: &mut Producer<OrderBook>,
+    sender: &SlotSender<OrderBook>,
     book: OrderBook,
     metrics: &ExchangeMetrics,
 ) -> bool {
-    if producer.is_abandoned() {
+    if sender.is_abandoned() {
         warn!(exchange = metrics.name, "consumer dropped, stopping");
         return false;
     }
-    match producer.push(book) {
-        Ok(()) => true,
-        Err(rtrb::PushError::Full(_)) => {
-            metrics.ring_drops.fetch_add(1, Relaxed);
-            warn!(exchange = metrics.name, "ring full, dropping snapshot");
-            true
-        }
-    }
+    sender.send(book);
+    true
 }
 
 /// Exponential backoff with equal jitter. Returns `Break` on cancellation.
@@ -136,7 +132,7 @@ pub async fn backoff_sleep(
 pub async fn run_ws_loop<H: WsHandler>(
     mut handler: H,
     symbol: String,
-    mut producer: Producer<OrderBook>,
+    sender: SlotSender<OrderBook>,
     metrics: Arc<ExchangeMetrics>,
     cancel: CancellationToken,
 ) {
@@ -213,7 +209,7 @@ pub async fn run_ws_loop<H: WsHandler>(
                         }
                     };
 
-                    match handler.process_text(&text, &mut producer, &metrics) {
+                    match handler.process_text(&text, &sender, &metrics) {
                         HandleResult::Continue => {}
                         HandleResult::Reconnect => break,
                         HandleResult::Shutdown => return,
@@ -242,21 +238,20 @@ pub async fn run_ws_loop<H: WsHandler>(
     }
 }
 
-/// Create a SPSC ring buffer and spawn an exchange adapter on a dedicated OS
-/// thread. Returns the consumer half (for the merger) and the thread handle.
+/// Create a SPSC slot and spawn an exchange adapter on a dedicated OS thread.
+/// Returns the receiver half (for the merger) and the thread handle.
 ///
-/// Encapsulates ring creation + thread spawn so adding a new exchange is a
+/// Encapsulates slot creation + thread spawn so adding a new exchange is a
 /// single call site.
 pub fn wire_exchange<H: WsHandler>(
     handler: H,
     symbol: String,
-    ring_capacity: usize,
     metrics: Arc<ExchangeMetrics>,
     cancel: CancellationToken,
-) -> std::io::Result<(rtrb::Consumer<OrderBook>, std::thread::JoinHandle<()>)> {
-    let (producer, consumer) = rtrb::RingBuffer::new(ring_capacity);
-    let handle = spawn_exchange(handler, symbol, producer, metrics, cancel)?;
-    Ok((consumer, handle))
+) -> std::io::Result<(SlotReceiver<OrderBook>, std::thread::JoinHandle<()>)> {
+    let (sender, receiver) = crate::atomic_slot::slot();
+    let handle = spawn_exchange(handler, symbol, sender, metrics, cancel)?;
+    Ok((receiver, handle))
 }
 
 /// Spawn an exchange adapter on a dedicated OS thread with its own single-threaded
@@ -264,7 +259,7 @@ pub fn wire_exchange<H: WsHandler>(
 fn spawn_exchange<H: WsHandler>(
     handler: H,
     symbol: String,
-    producer: Producer<OrderBook>,
+    sender: SlotSender<OrderBook>,
     metrics: Arc<ExchangeMetrics>,
     cancel: CancellationToken,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
@@ -275,36 +270,37 @@ fn spawn_exchange<H: WsHandler>(
                 .enable_all()
                 .build()
                 .unwrap_or_else(|e| panic!("{} runtime: {e}", H::NAME));
-            rt.block_on(run_ws_loop(handler, symbol, producer, metrics, cancel));
+            rt.block_on(run_ws_loop(handler, symbol, sender, metrics, cancel));
         })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering::Relaxed;
-
     use super::*;
     use crate::testutil::{book, exchange_metrics, raw};
 
     #[test]
-    fn try_send_ring_full_drops() {
-        // 1-slot ring: push one to fill it, then push another -- should drop, not error.
-        let (mut producer, _consumer) = rtrb::RingBuffer::new(1);
+    fn try_send_slot_overwrites() {
+        let (sender, receiver) = crate::atomic_slot::slot();
         let m = exchange_metrics("test");
-        let b = book(0, &[raw(100.0, 1.0)], &[raw(101.0, 1.0)]);
-        assert!(try_send_book(&mut producer, b.clone(), &m));
-        // Ring is now full -- next push drops the book but returns true.
-        assert!(try_send_book(&mut producer, b, &m));
-        assert_eq!(m.ring_drops.load(Relaxed), 1);
+        let b1 = book(0, &[raw(100.0, 1.0)], &[raw(101.0, 1.0)]);
+        let b2 = book(0, &[raw(200.0, 2.0)], &[raw(201.0, 2.0)]);
+        assert!(try_send_book(&sender, b1, &m));
+        // Second send overwrites the first -- always succeeds.
+        assert!(try_send_book(&sender, b2, &m));
+        // Consumer gets only the latest.
+        let latest = receiver.recv().unwrap();
+        assert_eq!(latest.bids[0].price, crate::types::FixedPoint::from_f64(200.0));
+        assert!(receiver.recv().is_none());
     }
 
     #[test]
     fn try_send_abandoned_returns_false() {
-        let (mut producer, consumer) = rtrb::RingBuffer::new(4);
+        let (sender, receiver) = crate::atomic_slot::slot::<OrderBook>();
         let m = exchange_metrics("test");
-        drop(consumer); // Abandon the consumer.
+        drop(receiver); // Abandon the consumer.
         assert!(!try_send_book(
-            &mut producer,
+            &sender,
             book(0, &[raw(100.0, 1.0)], &[raw(101.0, 1.0)]),
             &m
         ));

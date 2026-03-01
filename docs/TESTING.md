@@ -3,14 +3,14 @@
 ## Running
 
 ```bash
-cargo test     # 75 tests
-cargo clippy   # 0 warnings, unsafe_code = "deny" (expect-gated for core pinning)
+cargo test     # 82 tests
+cargo clippy   # 0 warnings, unsafe_code = "deny" (expect-gated for core pinning + atomic_slot)
 cargo bench    # Criterion benchmarks (see BENCHMARKS.md)
 ```
 
 ## Coverage
 
-75 tests covering:
+82 tests covering:
 
 **Integration** -- end-to-end gRPC stream: mock exchange data through SPSC merger to gRPC client, updated book prices reflected in stream, single-exchange degraded mode delivery.
 
@@ -18,7 +18,7 @@ cargo bench    # Criterion benchmarks (see BENCHMARKS.md)
 
 **BookStore** -- insert-overwrites-existing, overflow beyond MAX_EXCHANGES silently dropped, evict_stale keeps fresh books, reinsert after eviction.
 
-**SPSC ring** -- ring-full drops snapshot (returns true), consumer-abandoned returns false, zero-amount levels filtered, malformed level rejection.
+**Atomic slot** -- send/recv basic, latest-value-wins overwrite semantics, abandoned detection (both sides), drop cleanup of unread values, overwrite drops stale, cross-thread correctness.
 
 **Health endpoint** -- all-connected returns OK, partial returns DEGRADED, none returns DOWN (503).
 

@@ -174,7 +174,7 @@ pub struct Level {
 
 const _: () = assert!(size_of::<Level>() == 24);
 
-/// Single-exchange order book snapshot. Moved through the SPSC ring buffer.
+/// Single-exchange order book snapshot. Moved through the SPSC atomic slot.
 ///
 /// **Invariant**: bids sorted descending by price, asks ascending.
 #[derive(Debug, Clone)]

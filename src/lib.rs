@@ -10,6 +10,7 @@ pub(crate) mod json_walker;
 pub mod merger;
 pub mod metrics;
 pub mod server;
+pub mod atomic_slot;
 #[cfg(test)]
 pub(crate) mod testutil;
 pub mod types;

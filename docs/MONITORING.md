@@ -26,7 +26,6 @@ Dashboard config: `monitoring/grafana/dashboards/orderbook.json`
 |--------|------|-------------|
 | `orderbook_messages_total{exchange}` | Counter | WebSocket messages received |
 | `orderbook_errors_total{exchange}` | Counter | Parse/connection errors |
-| `orderbook_ring_drops_total{exchange}` | Counter | SPSC ring full, stale snapshot dropped |
 | `orderbook_reconnections_total{exchange}` | Counter | Reconnection attempts |
 | `orderbook_merges_total` | Counter | Merge operations |
 | `orderbook_exchange_up{exchange}` | Gauge | Connection status (1=up) |

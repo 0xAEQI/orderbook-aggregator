@@ -1,9 +1,13 @@
 //! Order book merger.
 //!
 //! Runs on a **dedicated OS thread** with a busy-poll loop over per-exchange
-//! SPSC ring buffers (`rtrb`). No tokio runtime, no async overhead -- just
-//! `pop()` + `core::hint::spin_loop()` (PAUSE on x86). Burns one CPU core
+//! SPSC slots (`atomic_slot`). No tokio runtime, no async overhead -- just
+//! `recv()` + `core::hint::spin_loop()` (PAUSE on x86). Burns one CPU core
 //! for minimum wake-up latency.
+//!
+//! Each slot returns the latest snapshot atomically -- stale intermediates are
+//! silently overwritten by the producer (correct for full-snapshot order book
+//! data where each update supersedes the previous).
 //!
 //! Maintains the latest book per exchange and publishes merged [`Summary`]
 //! snapshots via a `tokio::watch` channel (`send()` is sync -- no runtime
@@ -18,12 +22,12 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
 
 use arrayvec::ArrayVec;
-use rtrb::Consumer;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::metrics::Metrics;
+use crate::atomic_slot::SlotReceiver;
 use crate::types::{DEPTH, ExchangeId, Level, OrderBook, RawLevel, Summary};
 
 /// Derived from [`crate::EXCHANGES`]. Sizes stack-allocated arrays in
@@ -101,12 +105,12 @@ impl BookStore {
     }
 }
 
-/// Runs the merger on a dedicated OS thread. Spin-polls SPSC ring buffers,
+/// Runs the merger on a dedicated OS thread. Spin-polls SPSC slots,
 /// merges, and publishes via `watch` (sync send -- no tokio runtime needed).
 ///
 /// Exits when all producers are dropped or cancellation is signalled.
 pub fn run_spsc(
-    mut consumers: Vec<Consumer<OrderBook>>,
+    receivers: &[SlotReceiver<OrderBook>],
     summary_tx: &watch::Sender<Summary>,
     metrics: &Metrics,
     cancel: &CancellationToken,
@@ -114,9 +118,9 @@ pub fn run_spsc(
     // Pin to the last available core -- isolates the merger from exchange threads
     // and tokio workers which naturally spread across the remaining cores.
     assert!(
-        consumers.len() <= MAX_EXCHANGES,
+        receivers.len() <= MAX_EXCHANGES,
         "too many exchanges ({}) for MAX_EXCHANGES ({MAX_EXCHANGES})",
-        consumers.len(),
+        receivers.len(),
     );
 
     pin_to_last_core();
@@ -124,8 +128,8 @@ pub fn run_spsc(
     let mut books = BookStore::new();
 
     info!(
-        "merger started (SPSC busy-poll, {} consumers)",
-        consumers.len()
+        "merger started (SPSC busy-poll, {} receivers)",
+        receivers.len()
     );
 
     loop {
@@ -135,19 +139,17 @@ pub fn run_spsc(
         }
 
         // All producers dropped → no more data.
-        if consumers.iter().all(Consumer::is_abandoned) {
+        if receivers.iter().all(SlotReceiver::is_abandoned) {
             info!("all producers dropped, merger exiting");
             break;
         }
 
-        // One merge + publish per input: every exchange update produces a new
-        // merged summary on the gRPC stream. This ensures no updates are silently
-        // collapsed and every book's E2E latency is individually recorded.
-        // Sequential scan across consumers -- for k=2, ordering bias is negligible
-        // and sequential access is more cache-friendly than true round-robin.
+        // Poll each slot: recv() atomically takes the latest value, or None if
+        // no new data since the last recv. With slot semantics, each call gives
+        // the freshest snapshot -- no drain loop needed.
         let mut got_any = false;
-        for consumer in &mut consumers {
-            if let Ok(book) = consumer.pop() {
+        for receiver in receivers {
+            if let Some(book) = receiver.recv() {
                 got_any = true;
                 let decode_start = book.decode_start;
                 books.insert(book);
@@ -156,8 +158,6 @@ pub fn run_spsc(
                 books.evict_stale(t0, STALE_THRESHOLD);
                 let summary = merge(&books);
                 let _ = summary_tx.send(summary);
-                // Merge latency measured offline by Criterion benchmarks -- keeping
-                // it off the hot path saves 3 atomic ops + bucket scan (~25ns).
                 metrics.e2e_latency.record(decode_start.elapsed());
                 metrics.merges.fetch_add(1, Relaxed);
             }
