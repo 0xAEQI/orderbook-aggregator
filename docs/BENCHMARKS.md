@@ -52,8 +52,8 @@ Live numbers from Prometheus histograms (`/metrics` endpoint), 2-minute run with
 
 | Exchange | Samples | P50 | P99 | Mean |
 |----------|---------|-----|-----|------|
-| Binance | 620 | ~3 μs | ~10 μs | 3.1 μs |
-| Bitstamp | 467 | ~3 μs | ~10 μs | 3.4 μs |
+| Binance | 726 | ~3 μs | ~10 μs | 3.6 μs |
+| Bitstamp | 549 | ~3 μs | ~10 μs | 3.6 μs |
 
 **Merge latency** — measured offline by Criterion benchmarks (`merge_2x10`): **314ns median**. Not recorded on the hot path; merge latency is stable enough that Criterion benchmarks suffice.
 
@@ -61,17 +61,17 @@ Live numbers from Prometheus histograms (`/metrics` endpoint), 2-minute run with
 
 | Samples | P50 | P99 | Mean |
 |---------|-----|-----|------|
-| 1,087 | **~8 μs** | **~20 μs** | 8.1 μs |
+| 1,275 | **~8 μs** | **~30 μs** | 8.1 μs |
 
-Percentiles are interpolated from cumulative histogram buckets (16 logarithmic buckets from 100ns to 100ms). Zero errors, zero reconnections during the measurement window.
+Percentiles are interpolated from cumulative histogram buckets (16 logarithmic buckets from 100ns to 100ms). Zero errors, zero reconnections during the 138-second measurement window.
 
 The gap between benchmark e2e (1.65μs) and production P50 (~8μs) is accounted for by:
-1. WebSocket frame allocation (~1μs) — the `String` from tokio-tungstenite
-2. Atomic slot wait time (~1-3μs) — time between send and merger's next `recv()`
+1. WebSocket frame allocation — the `String` from tokio-tungstenite (unavoidable without kernel bypass)
+2. Slot wait time — time between send and merger's next `recv()` (busy-poll interval)
 3. Production merge overhead — `evict_stale()` + `Instant::now()` + metrics recording
 4. Shared-server noise — no core isolation, no `isolcpus`, CPU shared with other processes
 
-With dedicated hardware, `isolcpus`, and Docker `cpuset`, the gap narrows -- WS allocation and SPSC wait time are largely eliminated by warm caches and zero preemption.
+With dedicated hardware, `isolcpus`, and Docker `cpuset`, the gap narrows -- slot wait time approaches zero with a warm busy-poll loop and zero preemption.
 
 ## Hardware Sensitivity
 
