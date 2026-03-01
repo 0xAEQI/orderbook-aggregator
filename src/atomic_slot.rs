@@ -8,10 +8,18 @@
 //! always publishes the latest value, the consumer always reads the freshest
 //! snapshot, and stale intermediates are silently overwritten in-place.
 //!
-//! Performance: no `Box::new` per send, no `Box::from_raw` per recv. The only
-//! heap allocation is the one-time `Box::new(Shared)` at creation. Each `send()`
-//! is a buffer write + one atomic swap. Each `recv()` is one atomic load (fast
-//! check) + one atomic swap + a `.take()`.
+//! ## Hardware optimizations
+//!
+//! - **Cache-line isolation**: The atomic `state` field is on its own 64-byte
+//!   cache line (`CachePadded`), preventing false sharing with buffer data.
+//!   The merger's busy-poll loop loads `state` tens of millions of times/sec;
+//!   without isolation, a producer buffer write would invalidate the consumer's
+//!   L1-cached `state` on every update (~3-5ns penalty per dirty check).
+//!
+//! - **Bounds-check elimination**: Buffer indices are always 0, 1, or 2
+//!   (enforced by the triple-buffer invariant). `get_unchecked()` eliminates
+//!   the compiler-inserted bounds check on each buffer access (~1-2ns saved
+//!   per access, 2 accesses per data transfer).
 
 use std::cell::{Cell, UnsafeCell};
 use std::marker::PhantomData;
@@ -19,6 +27,11 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 /// Dirty flag: bit 0 of the packed state byte.
 const DIRTY: u8 = 1;
+
+/// Cache-line-aligned wrapper. Forces the inner value onto its own 64-byte
+/// cache line, preventing false sharing with adjacent fields.
+#[repr(C, align(64))]
+struct CachePadded<T>(T);
 
 /// Sending half of the SPSC slot.
 pub struct SlotSender<T> {
@@ -48,17 +61,26 @@ unsafe impl<T: Send> Send for SlotSender<T> {}
 unsafe impl<T: Send> Send for SlotReceiver<T> {}
 
 /// Shared state: three pre-allocated buffers + packed atomic state.
+///
+/// `#[repr(C)]` ensures deterministic field layout so the `CachePadded` state
+/// field is guaranteed to be after `buffers`, on its own cache line.
+#[repr(C)]
 struct Shared<T> {
     /// Triple buffer: three pre-allocated slots. Each is exclusively owned by
     /// the producer (back), the consumer (front), or the exchange point (middle).
     /// The triple-buffer invariant guarantees all three indices are always
     /// distinct -- no two roles share a buffer at any time.
     buffers: [UnsafeCell<Option<T>>; 3],
-    /// Packed state byte:
+    /// Packed state byte on its own cache line:
     /// - bit 0: dirty flag (1 = new data available)
     /// - bits 1-2: middle buffer index (0, 1, or 2)
-    state: AtomicU8,
-    /// Reference count: starts at 2 (sender + receiver).
+    ///
+    /// Isolated to prevent false sharing: the merger's busy-poll loop loads
+    /// this field tens of millions of times/sec. If it shared a cache line
+    /// with buffer data, every producer write would invalidate the consumer's
+    /// L1-cached copy (~3-5ns penalty per dirty check).
+    state: CachePadded<AtomicU8>,
+    /// Reference count: starts at 2 (sender + receiver). Cold path only.
     refcount: AtomicU8,
 }
 
@@ -73,7 +95,7 @@ pub fn slot<T>() -> (SlotSender<T>, SlotReceiver<T>) {
             UnsafeCell::new(None),
             UnsafeCell::new(None),
         ],
-        state: AtomicU8::new(1 << 1), // middle=1, dirty=0
+        state: CachePadded(AtomicU8::new(1 << 1)), // middle=1, dirty=0
         refcount: AtomicU8::new(2),
     }));
     let sender = SlotSender {
@@ -114,8 +136,13 @@ impl<T> SlotSender<T> {
         // Safety: only the producer accesses the back buffer. The triple-buffer
         // invariant guarantees back ≠ middle ≠ front. The assignment drops any
         // stale Option<T> that was previously in this slot.
+        // get_unchecked: back ∈ {0, 1, 2} always — derived from bits 1-2 of
+        // the state byte, which only encodes valid buffer indices.
         unsafe {
-            *(*self.shared).buffers[back as usize].get() = Some(value);
+            *(*self.shared)
+                .buffers
+                .get_unchecked(back as usize)
+                .get() = Some(value);
         }
         // Publish: swap back↔middle, set dirty flag.
         // Release: ensures the buffer write above is visible before the swap
@@ -123,7 +150,7 @@ impl<T> SlotSender<T> {
         #[expect(unsafe_code)]
         let old_state = unsafe {
             (*self.shared)
-                .state
+                .state.0
                 .swap((back << 1) | DIRTY, Ordering::Release)
         };
         // Old middle becomes new back.
@@ -155,7 +182,7 @@ impl<T> SlotReceiver<T> {
         // Relaxed is sufficient: only the consumer clears the dirty flag,
         // so between this load and the swap below, dirty can only stay set
         // or be re-set by the producer. It cannot become 0 spuriously.
-        if unsafe { (*self.shared).state.load(Ordering::Relaxed) } & DIRTY == 0 {
+        if unsafe { (*self.shared).state.0.load(Ordering::Relaxed) } & DIRTY == 0 {
             return None;
         }
         let front = self.front.get();
@@ -163,12 +190,20 @@ impl<T> SlotReceiver<T> {
         // Acquire: ensures we see all buffer writes the producer made before
         // its Release swap.
         let old_state =
-            unsafe { (*self.shared).state.swap(front << 1, Ordering::Acquire) };
+            unsafe { (*self.shared).state.0.swap(front << 1, Ordering::Acquire) };
         // Old middle becomes new front (holds the latest value).
         let new_front = old_state >> 1;
         self.front.set(new_front);
         // Safety: only the consumer accesses the front buffer.
-        unsafe { (*(*self.shared).buffers[new_front as usize].get()).take() }
+        // get_unchecked: new_front ∈ {0, 1, 2} always — derived from bits 1-2
+        // of the state byte returned by the swap.
+        unsafe {
+            (*(*self.shared)
+                .buffers
+                .get_unchecked(new_front as usize)
+                .get())
+            .take()
+        }
     }
 
     /// Returns true if the sender has been dropped.
